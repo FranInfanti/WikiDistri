@@ -1,32 +1,45 @@
 import ast
 
 from datetime import datetime
+from dataclasses import dataclass
 
 _FIELDS = 7
 
+@dataclass
 class WikipediaArticle:
+    abstract: str
+    name: str
+    url: str
+    date_modified: datetime | None
+    image: str | None
+    in_language: str | None
+    sections: str
 
     @classmethod
     def from_csv(cls, csv_line: str):
         fields = csv_line.strip().split(",")
-
         if len(fields) != _FIELDS:
             raise ValueError(f"Invalid CSV line: {csv_line}")
 
-        abstract = fields[0]
+        abstract, date_modified, image, in_language, name, sections, url = fields
 
-        if fields[1] is not None:
-            date_modified = datetime.strptime(fields[1], "%Y-%m-%d %H:%M:%S")
+        date_modified = (
+            datetime.strptime(date_modified, "%Y-%m-%d %H:%M:%S") if date_modified.lower() != "null" else None
+        )
 
-        if fields[2] is not None:
-            image = ast.literal_eval(fields[2])['content_url']
+        image_data = (
+            ast.literal_eval(image) if image and image.lower() != "null" else None
+        )
 
-        if fields[3] is not None:
-            in_language = ast.literal_eval(fields[3])['identifier']
+        if isinstance(image_data, dict):
+            image = image_data.get("content_url")
 
-        name = fields[4]
-        sections = fields[5]
-        url = fields[6]
+        language_data = (
+            ast.literal_eval(in_language) if in_language.lower() != "null" else None
+        )
+
+        if isinstance(language_data, dict):
+            in_language = language_data.get("identifier")
 
         return cls(
             abstract=abstract,
