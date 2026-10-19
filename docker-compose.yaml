@@ -21,11 +21,13 @@ services:
       dockerfile: services/gateway/Dockerfile
     container_name: gateway
     environment:
-      - HOST=localhost
+      - HOST=0.0.0.0
       - PORT=5000
       - MOM_HOST=rabbitmq
       - FILTER_OUTPUT_QUEUE=filter_output_queue
       - WORD_READER_OUTPUT_QUEUE=word_reader_output_queue
+    ports:
+      - 5000:5000
     depends_on:
       rabbitmq:
         condition: service_healthy
