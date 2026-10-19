@@ -41,29 +41,29 @@ class Gateway():
             for csv_line in batches:
                 article = entity.wikipedia_article.WikipediaArticle.from_csv(csv_line)
 
-                print(article)
-
-                self.filter_output_queue.send_message(
+                self.filter_output_queue.send(
                     message_protocol.internal.serialize(article.to_list())
                 )
 
-                self.word_reader_output_queue.send_message(
+                self.word_reader_output_queue.send(
                     message_protocol.internal.serialize(article.to_list())
                 )
         elif opcode == message_protocol.OPCODE_EOF:
             logging.info(f"Received EOF from client with req_id: {req_id}. Sending to queues...")
 
-            self.filter_output_queue.send_message(
+            self.filter_output_queue.send(
                 message_protocol.internal.serialize([opcode, 0, ""])
             )
 
-            self.word_reader_output_queue.send_message(
+            self.word_reader_output_queue.send(
                 message_protocol.internal.serialize([opcode, 0, ""])
             )
         elif opcode == message_protocol.OPCODE_ACK:
             raise NotImplementedError("ACK opcode not implemented")
         else:
-            logging.error(f"Unexpected opcode received from client with req_id: {req_id}. Opcode: {opcode}")
+            logging.warning(
+                f"Unexpected opcode received from client with req_id: {req_id}. Opcode: {opcode}"
+            )
 
     def _handle_client(self, client_socket: socket, req_id: int):
         logging.info(f"Handle client with req_id: {req_id}")
@@ -74,8 +74,8 @@ class Gateway():
                 self._process_message(req_id, *args)
                 if args[0] == message_protocol.OPCODE_EOF:
                     break
-        except Exception as e:
-            logging.error(f"Error receiving message from client with req_id: {req_id}. Error: {e}")
+        except Exception:
+            logging.exception(f"Error handling client with req_id: {req_id}")
         finally:
             with self.conns_lock:
                 client_socket.close()
@@ -108,9 +108,9 @@ class Gateway():
 def main():
     try:
         Gateway(HOST, PORT).start()
-    except Exception as e:
-        logging.error(f"An unexpected error has occurred {e}")
-        raise e
+    except Exception:
+        logging.exception("An unexpected error has occurred")
+        raise
 
 if __name__ == "__main__":
     main()

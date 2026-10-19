@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     container_name: rabbitmq
     environment:
-      - RABBITMQ_LOG_LEVELS=error
+      - RABBITMQ_LOG_LEVELS=info
     healthcheck:
       interval: 5s
       retries: 10
