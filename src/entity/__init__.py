@@ -1,1 +1,0 @@
-from .wikipedia_article import WikipediaArticle
