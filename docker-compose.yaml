@@ -1,0 +1,27 @@
+services:
+  rabbitmq:
+    build:
+      context: ./src/services/rabbitmq
+      dockerfile: Dockerfile
+    container_name: rabbitmq
+    environment:
+      - RABBITMQ_LOG_LEVELS=error
+    healthcheck:
+      interval: 5s
+      retries: 10
+      start_period: 50s
+      test: rabbitmq-diagnostics check_port_connectivity
+      timeout: 3s
+    ports:
+      - 5672:5672
+      - 15672:15672
+  gateway:
+    build:
+      context: ./src/
+      dockerfile: services/gateway/Dockerfile
+    container_name: gateway
+    environment:
+      RABBITMQ_HOST: rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
