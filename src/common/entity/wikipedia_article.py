@@ -1,9 +1,11 @@
+import io
+import csv
 import ast
 
 from datetime import datetime
 from dataclasses import dataclass
 
-_FIELDS = 7
+_FIELDS = 8
 
 @dataclass
 class WikipediaArticle:
@@ -16,30 +18,29 @@ class WikipediaArticle:
     sections: str
 
     @classmethod
-    def from_csv(cls, csv_line: str):
-        fields = csv_line.strip().split(",")
-        if len(fields) != _FIELDS:
-            raise ValueError(f"Invalid CSV line: {csv_line}")
+    def from_csv(cls, line: str):
+        stream = io.StringIO(line)
+        reader = csv.reader(stream)
+        fields = ( 
+            [ None if field in ("", "null", "Null", "NaN") else field for field in next(reader) ]
+        )
 
-        abstract, date_modified, image, in_language, name, sections, url = fields
+        if len(fields) != _FIELDS:
+            raise ValueError(f"Expected fields: {_FIELDS} got: {len(fields)}")
+
+        _, abstract, date_modified, image, in_language, name, sections, url = fields
 
         date_modified = (
-            datetime.strptime(date_modified, "%Y-%m-%d %H:%M:%S") if date_modified.lower() != "null" else None
+            datetime.strptime(date_modified, "%Y-%m-%d %H:%M:%S") if date_modified else None
         )
 
-        image_data = (
-            ast.literal_eval(image) if image and image.lower() != "null" else None
+        image = (
+            ast.literal_eval(image)["content_url"] if image else None
         )
 
-        if isinstance(image_data, dict):
-            image = image_data.get("content_url")
-
-        language_data = (
-            ast.literal_eval(in_language) if in_language.lower() != "null" else None
+        in_language = (
+            ast.literal_eval(in_language)["identifier"] if in_language else None
         )
-
-        if isinstance(language_data, dict):
-            in_language = language_data.get("identifier")
 
         return cls(
             abstract=abstract,
