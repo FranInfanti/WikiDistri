@@ -3,9 +3,9 @@ import socket
 import logging
 import threading
 
+from common import entity
 from common import middleware
 from common import message_protocol
-from common import entity
 
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", 5000))
@@ -33,13 +33,13 @@ class Gateway():
         self.conns = {}
         self.conns_lock = threading.Lock()
 
-    def _process_message(self, req_id: int, opcode: int, _: int, message: str):
+    def _process_message(self, req_id: int, opcode: int, batches: int, message: bytes):
         if opcode == message_protocol.OPCODE_DATA:
             logging.info(f"Received DATA from client with req_id: {req_id}. Sending to queues...")
 
-            batches = message_protocol.batching.unbatch_messages(message)
-            for csv_line in batches:
-                article = entity.wikipedia_article.WikipediaArticle.from_csv(csv_line)
+            lines = message_protocol.batching.unbatch_messages(message, batches)
+            for line in lines:
+                article = entity.wikipedia_article.WikipediaArticle.from_csv(line)
 
                 self.filter_output_queue.send(
                     message_protocol.internal.serialize(article.to_list())
