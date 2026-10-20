@@ -21,7 +21,7 @@ services:
       dockerfile: services/gateway/Dockerfile
     container_name: gateway
     environment:
-      - HOST=0.0.0.0
+      - HOST=gateway
       - PORT=5000
       - MOM_HOST=rabbitmq
       - FILTER_OUTPUT_QUEUE=filter_output_queue
