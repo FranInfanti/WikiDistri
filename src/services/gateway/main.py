@@ -33,7 +33,7 @@ class Gateway():
         self.conns = {}
         self.conns_lock = threading.Lock()
 
-    def _process_message(self, req_id: int, opcode: int, batches: int, message: bytes):
+    def _process_external_message(self, req_id: int, opcode: int, batches: int, message: bytes):
         if opcode == message_protocol.OPCODE_DATA:
             logging.info(f"Received DATA from client with req_id: {req_id}. Sending to queues...")
 
@@ -71,7 +71,7 @@ class Gateway():
         try:
             while True:
                 args = message_protocol.external.recv_message(client_socket)
-                self._process_message(req_id, *args)
+                self._process_external_message(req_id, *args)
                 if args[0] == message_protocol.OPCODE_EOF:
                     break
         except Exception:
