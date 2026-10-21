@@ -23,6 +23,10 @@ class MessageMiddleware(ABC):
         pass
 
     @abstractmethod
+    def stop_consuming_threadsafe(self):
+        pass
+
+    @abstractmethod
     def send(self, message):
         pass
 

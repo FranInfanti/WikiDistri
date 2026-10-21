@@ -18,6 +18,12 @@ class MessageMiddlewareCommonRabbitMQ:
         except pika.exceptions.AMQPConnectionError:
             raise MessageMiddlewareDisconnectedError()
 
+    def stop_consuming_threadsafe(self):
+        if self.conn and self.conn.is_open:
+            self.conn.add_callback_threadsafe(
+                lambda: self.stop_consuming()
+            )
+
     def close(self):
         try:
             self.conn.close()
@@ -61,6 +67,9 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareCommonRabbitMQ, MessageMid
 
     def stop_consuming(self):
         super().stop_consuming()
+
+    def stop_consuming_threadsafe(self):
+        super().stop_consuming_threadsafe()
 
     def send(self, message):
         try:
@@ -133,6 +142,9 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareCommonRabbitMQ, Message
 
     def stop_consuming(self):
         super().stop_consuming()
+
+    def stop_consuming_threadsafe(self):
+        super().stop_consuming_threadsafe()
 
     def send(self, message):
         try:
