@@ -1,6 +1,6 @@
 import socket
 
-def send_all(socket: socket, bytes):
+def send_all(socket: socket.socket, bytes):
     bytes_written = 0
 
     while bytes_written < len(bytes):
@@ -10,7 +10,7 @@ def send_all(socket: socket, bytes):
         except Exception as e:
             raise e
 
-def recv_all(socket: socket, length: int):
+def recv_all(socket: socket.socket, length: int):
     bytes_received = 0
     data = b""
 
