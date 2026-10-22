@@ -3,6 +3,7 @@ import re
 import logging
 import hashlib
 from datetime import datetime
+import signal
 
 from common import middleware
 from common import message_protocol
@@ -23,8 +24,6 @@ CUTOFF_YEAR = 2021
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 WORD_RE = re.compile(r"\w+", re.UNICODE)
 
-DEFAULT_REQ_ID = 0
-
 
 def tokenize(abstract: str, language: str | None) -> list[str]:
     stopwords = STOPWORDS.get(language or "", set())
@@ -38,6 +37,10 @@ def shard_for(req_id: int, word: str) -> int:
 
 class WordReader:
     def __init__(self):
+        signal.signal(signal.SIGTERM, self._sigterm_handler)
+ 
+        self.is_running = True
+
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST, queue_name=INPUT_QUEUE
         )
@@ -54,33 +57,37 @@ class WordReader:
             host=MOM_HOST, queue_name=SUM_AMOUNT_QUEUE
         )
 
+    def _sigterm_handler(self, _signum, _frame):
+        logging.info("Shutdown signal received, stopping consumer...")
+        self.is_running = False
+ 
+        try:
+            self.input_queue.stop_consuming()
+        except Exception:
+            logging.exception("Error stopping the consumer")
+
     def _on_message(self, message: bytes, ack, nack):
         try:
-            fields = message_protocol.internal.deserialize(message)
-
-            if isinstance(fields[0], int):
-                self._handle_control(fields)
+            opcode, req_id, *fields = message_protocol.internal.deserialize(message)
+ 
+            if opcode == message_protocol.OPCODE_DATA:
+                self._handle_article(req_id, fields)
+            elif opcode == message_protocol.OPCODE_EOF:
+                logging.info(f"Received EOF for req_id: {req_id}. Forwarding to next stages...")
+                self._forward_eof(req_id)
             else:
-                self._handle_article(fields)
+                logging.warning(f"Unexpected opcode for req_id {req_id}: {opcode}")
+ 
             ack()
         except Exception:
             logging.exception("Error processing message")
             nack()
-
-    def _handle_control(self, fields):
-        opcode = fields[0]
-        if opcode == message_protocol.OPCODE_EOF:
-            logging.info("Received EOF. Forwarding to next stages...")
-            self._forward_eof(DEFAULT_REQ_ID)
-        else:
-            logging.warning(f"Unexpected opcode: {opcode}")
-
-    def _handle_article(self, fields):
-        abstract, date_modified, _image, in_language, _name, _sections, url = fields
-        req_id = DEFAULT_REQ_ID
-
+ 
+    def _handle_article(self, req_id: int, fields: list):
+        abstract, date_modified, in_language, url = fields
+ 
         words = tokenize(abstract or "", in_language)
-
+ 
         self._send_unique_words(req_id, words, in_language)
         self._send_word_amount(req_id, url, len(words), date_modified)
 
@@ -108,7 +115,7 @@ class WordReader:
         else:
             self.sum_amount_queue.send(message_protocol.internal.serialize([req_id, amount]))
 
-    def _forward_eof(self, req_id: int):
+    def _forward_eof(self, req_id: int): # a cambiar
         eof = message_protocol.internal.serialize([message_protocol.OPCODE_EOF, req_id, ""])
         for queue in self.sum_words_queues:
             queue.send(eof)
@@ -116,9 +123,20 @@ class WordReader:
         self.sum_amount_queue.send(eof)
 
     def start(self):
-        logging.info("Word Reader waiting for messages...")
-        self.input_queue.start_consuming(self._on_message)
-
+        try:
+            logging.info("Word Reader waiting for messages...")
+            self.input_queue.start_consuming(self._on_message)
+        finally:
+            self._close()
+ 
+    def _close(self):
+        logging.info("Closing queues...")
+        queues = [self.input_queue, self.join_queue, self.sum_amount_queue, *self.sum_words_queues]
+        for queue in queues:
+            try:
+                queue.close()
+            except Exception:
+                logging.exception("Error closing queue")
 
 def main():
     logging.basicConfig(level=logging.INFO)
