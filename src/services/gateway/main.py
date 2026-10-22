@@ -3,21 +3,22 @@ import time
 import signal
 import socket
 import logging
+import functools
 import threading
 import itertools
 
 from common import entity, middleware, message_protocol
 
-HOST = os.environ.get("HOST", "0.0.0.0")
-PORT = int(os.environ.get("PORT", 5000))
+_JOBS = 5
+_TIMEOUT = 5.0
 
-MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
-FILTER_OUTPUT_QUEUE = os.environ.get("FILTER_OUTPUT_QUEUE", "filter_output_queue")
-WORD_READER_OUTPUT_QUEUE = os.environ.get("WORD_READER_OUTPUT_QUEUE", "word_reader_output_queue")
-PREFIX_INPUT_QUEUES = os.environ.get("PREFIX_INPUT_QUEUES", "job_input_queue")
-JOBS = int(os.environ.get("JOBS", 5))
+HOST = os.environ["HOST"]
+PORT = int(os.environ["PORT"])
 
-STOP_TIMEOUT = float(os.environ.get("STOP_TIMEOUT", 10.0))
+MOM_HOST = os.environ["MOM_HOST"]
+FILTER_OUTPUT_QUEUE = os.environ["FILTER_OUTPUT_QUEUE"]
+WORD_READER_OUTPUT_QUEUE = os.environ["WORD_READER_OUTPUT_QUEUE"]
+GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
 
 class Gateway:
 
@@ -37,9 +38,9 @@ class Gateway:
         self.input_queues = {
             job_id: middleware.MessageMiddlewareQueueRabbitMQ(
                 host=MOM_HOST,
-                queue_name=f"{PREFIX_INPUT_QUEUES}_{job_id}"
+                queue_name=f"{GATEWAY_PREFIX}_{job_id}"
             )
-            for job_id in range(1, JOBS + 1)
+            for job_id in range(1, _JOBS + 1)
         }
 
         self.server_host = host
@@ -48,14 +49,15 @@ class Gateway:
         self.is_running = True
 
         self.req_counter = itertools.count(1)
-
         self.publish_lock = threading.Lock()
 
-        self.external_conns = {}
-        self.external_conns_lock = threading.Lock()
+        self.threads = []
 
-        self.inner_conns = {}
-        self.inner_conns_lock = threading.Lock()
+        self.jobs_by_client = {}
+        self.jobs_by_client_lock = threading.Lock()
+
+        self.client_by_req = {}
+        self.client_by_req_lock = threading.Lock()
 
     def _sigterm_handler(self, _signum, _frame):
         logging.info("Shutdown signal received, setting shutdown flag and closing listener...")
@@ -71,30 +73,25 @@ class Gateway:
             except Exception:
                 pass
 
-    def _wait_for_clients(self):
-        deadline = time.time() + STOP_TIMEOUT
+    def _wait_for_threads(self):
+        deadline = time.time() + _TIMEOUT
 
-        logging.info(f"Waiting up to {STOP_TIMEOUT}s for active clients to finish...")
+        logging.info(f"Waiting up to {_TIMEOUT}s for active threads to finish...")
 
-        with self.external_conns_lock:
-            threads = list(self.external_conns.values())
+        for input_queue in self.input_queues.values():
+            input_queue.stop_consuming_threadsafe()
 
-        for thread in threads:
+        for thread in self.threads:
             remaining = max(0.0, deadline - time.time())
             if remaining <= 0:
                 break
 
             thread.join(timeout=remaining)
 
-        with self.external_conns_lock:
-            active_sockets = list(self.external_conns.keys())
+        logging.warning("Closing client connections...")
 
-        if active_sockets:
-            logging.warning(
-                f"Grace period expired with {len(active_sockets)} active client(s). "
-                "Forcibly closing client connections..."
-            )
-            for client_socket in active_sockets:
+        with self.client_by_req_lock:
+            for client_socket in self.client_by_req.values():
                 try:
                     client_socket.shutdown(socket.SHUT_RDWR)
                 except Exception:
@@ -103,23 +100,55 @@ class Gateway:
                     client_socket.close()
                 except Exception:
                     pass
-        else:
-            logging.info("All clients finished gracefully before timeout.")
 
-    def _publish_message(self, queue, message):
+    def _publish_message(self, queue, message: list):
+        """
+        Publishes a message to a queue accessed by multiple threads.
+
+        queue
+            The queue to which the message is being published.
+
+        message
+            The message being published.
+        """
         with self.publish_lock:
-            queue.send(message_protocol.internal.serialize(message))
+            queue.send(
+                message_protocol.internal.serialize(message)
+            )
 
-    def _process_internal_message(self, message, ack, nack):
+    def _send_response(self, job_id, message, ack, nack):
         try:
             fields = message_protocol.internal.deserialize(message)
-            opcode = fields[0]
+            opcode = fields.pop(0)
+            req_id = fields.pop(0)
+
+            if opcode == message_protocol.OPCODE_DATA:
+                with self.client_by_req_lock:
+                    client_socket = self.client_by_req[req_id]
+
+                    message_protocol.send_message(
+                        client_socket=client_socket,
+                        message="", # TODO: What do we send?
+                        opcode=message_protocol.OPCODE_DATA
+                    )
+            elif opcode == message_protocol.OPCODE_EOF:
+                with self.jobs_by_client_lock:
+                    self.jobs_by_client[req_id][job_id] = True
+
+                    finish = True
+                    for job in self.jobs_by_client[req_id].values():
+                        finish = finish and job
+
+                if finish:
+                    logging.info(f"All jobs done for the client with req_id: {req_id}. Goodbye...")
+                    del self.jobs_by_client[req_id]
+                    del self.client_by_req[req_id]
+
             ack()
         except Exception:
-            logging.exception("Error processing internal message")
             nack()
 
-    def _process_external_eof(self, req_id: int):
+    def _publish_eof(self, req_id: int):
         logging.info(f"Received EOF from client {req_id}. Propagating EOF...")
 
         message = [message_protocol.OPCODE_EOF, req_id, ""]
@@ -127,7 +156,7 @@ class Gateway:
         self._publish_message(self.filter_output_queue, message)
         self._publish_message(self.word_reader_output_queue, message)
 
-    def _process_external_data(self, req_id: int, batches: int, message: bytes):
+    def _publish_data(self, req_id: int, batches: int, message: bytes):
         logging.info(f"Received DATA batch from client {req_id}. Publishing rows...")
         
         lines = message_protocol.batching.unbatch_messages(message, batches)
@@ -139,51 +168,52 @@ class Gateway:
             )
             self._publish_message(self.filter_output_queue, filter_message)
 
-            word_reader_payload = [message_protocol.OPCODE_DATA, req_id] + wikipedia_article.to_list(
+            word_reader_message = [message_protocol.OPCODE_DATA, req_id] + wikipedia_article.to_list(
                 name=True, sections=True
             )
-            self._publish_message(self.word_reader_output_queue, word_reader_payload)
+            self._publish_message(self.word_reader_output_queue, word_reader_message)
 
-    def _handle_client(self, client_socket: socket.socket, req_id: int):
-        logging.info(f"Connected client with req_id: {req_id}")
+    def _upload_data(self, client_socket: socket.socket, req_id: int):
+        logging.info(f"Upload data for client with req_id: {req_id}")
         
         try:
             while self.is_running:
-                args = message_protocol.external.recv_message(client_socket)
+                opcode, *args = message_protocol.external.recv_message(client_socket)
 
-                opcode = args.pop(0)
                 if opcode == message_protocol.OPCODE_EOF:
-                    self._process_external_eof(req_id)
-                    break
+                    self._publish_eof(req_id)
+                    return
                 elif opcode == message_protocol.OPCODE_DATA:
-                    self._process_external_data(req_id, *args)
+                    self._publish_data(req_id, *args)  # type: ignore
                 else:
                     logging.warning(f"Unexpected opcode from client {req_id}: {opcode}")
         except Exception:
             if self.is_running:
-                logging.exception(f"Error handling client with req_id: {req_id}")
-        finally:
-            with self.external_conns_lock:
-                try:
-                    client_socket.close()
-                except Exception:
-                    pass
+                logging.exception(f"Error while uploading data for client with req_id: {req_id}")
 
-                self.external_conns.pop(client_socket, None)
+        logging.info(f"Data for client with req_id: {req_id} has been uploaded")
 
-    def _start_consuming(self):
-        for job_id, queue in self.input_queues.items():
-            thread = threading.Thread(
-                target=queue.start_consuming,
-                args=(self._process_internal_message,),
-                daemon=True,
-                name=f"Consumer-Job-{job_id}"
-            )
+    def _handle_client(self, client_socket: socket.socket):
+        req_id = next(self.req_counter)
+        logging.info(f"Connected client with req_id: {req_id}")
 
-            with self.inner_conns_lock:
-                self.inner_conns[job_id] = thread
-            
-            thread.start()
+        with self.jobs_by_client_lock:
+            self.jobs_by_client[req_id] = {
+                job_id: False
+                for job_id in range(1, _JOBS + 1)
+            }
+
+        thread = threading.Thread(
+            target=self._upload_data,
+            args=(client_socket, req_id),
+            name=f"ClientWorker-{req_id}"
+        )
+
+        with self.client_by_req_lock:
+            self.client_by_req[req_id] = client_socket
+
+        self.threads.append(thread)
+        thread.start()
 
     def start(self):
         try:
@@ -193,7 +223,16 @@ class Gateway:
                 server_socket.bind((self.server_host, self.server_port))
                 server_socket.listen()
 
-                self._start_consuming()
+                for job_id, queue in self.input_queues.items():
+                    callback = functools.partial(self._send_response, job_id=job_id)
+                    thread = threading.Thread(
+                        target=queue.start_consuming,
+                        args=(callback,),
+                        name=f"Consumer-Job-{job_id}"
+                    )
+
+                    self.threads.append(thread)
+                    thread.start()
 
                 logging.info(f"Gateway listening on {self.server_host}:{self.server_port}...")
                 while self.is_running:
@@ -203,25 +242,16 @@ class Gateway:
                         if not self.is_running:
                             break
                         raise
-
-                    req_id = next(self.req_counter)
-
-                    thread = threading.Thread(
-                        target=self._handle_client,
-                        args=(client_socket, req_id),
-                        daemon=True,
-                        name=f"ClientWorker-{req_id}"
-                    )
-
-                    with self.external_conns_lock:
-                        self.external_conns[client_socket] = thread
-
-                    thread.start()
+                    self._handle_client(client_socket)
         finally:
-            self._wait_for_clients()
+            self._wait_for_threads()
 
+            # close the queues...
             self.filter_output_queue.close()
             self.word_reader_output_queue.close()
+
+            for input_queue in self.input_queues.values():
+                input_queue.close()
 
 def main():
     logging.basicConfig(
