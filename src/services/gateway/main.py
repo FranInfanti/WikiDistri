@@ -1,16 +1,19 @@
+import functools
 import os
 import time
 import signal
 import socket
 import logging
-import functools
 import threading
 import itertools
 
+from gateway import client
 from common import entity, middleware, message_protocol
 
 _JOBS = 5
 _TIMEOUT = 5.0
+_HANDLE_CLIENT_REQUEST_PREFIX = "Uploader"
+_HANDLE_CLIENT_RESPONSE_PREFIX = "Consumer"
 
 HOST = os.environ["HOST"]
 PORT = int(os.environ["PORT"])
@@ -43,24 +46,23 @@ class Gateway:
             for job_id in range(1, _JOBS + 1)
         }
 
+        self.is_running = True
+        self.server_socket = None
         self.server_host = host
         self.server_port = port
-        self.server_socket = None
-        self.is_running = True
-
         self.req_counter = itertools.count(1)
-        self.publish_lock = threading.Lock()
 
-        self.threads = []
+        self.filter_output_queue_lock = threading.Lock()
+        self.word_reader_output_queue_lock = threading.Lock()
 
-        self.jobs_by_client = {}
-        self.jobs_by_client_lock = threading.Lock()
+        self.active_threads = {}
+        self.active_threads_lock = threading.Lock()
 
         self.client_by_req = {}
         self.client_by_req_lock = threading.Lock()
 
     def _sigterm_handler(self, _signum, _frame):
-        logging.info("Shutdown signal received, setting shutdown flag and closing listener...")
+        logging.info("SIGTERM signal received, setting shutdown flag and closing listener")
         self.is_running = False
 
         if self.server_socket:
@@ -68,114 +70,70 @@ class Gateway:
                 self.server_socket.shutdown(socket.SHUT_RDWR)
             except Exception:
                 pass
-            try:
-                self.server_socket.close()
-            except Exception:
-                pass
 
     def _wait_for_threads(self):
         deadline = time.time() + _TIMEOUT
-
-        logging.info(f"Waiting up to {_TIMEOUT}s for active threads to finish...")
+        logging.info(f"Waiting up to {_TIMEOUT}s for active threads to finish")
 
         for input_queue in self.input_queues.values():
             input_queue.stop_consuming_threadsafe()
 
-        for thread in self.threads:
+        with self.active_threads_lock:
+            active_threads = self.active_threads
+
+        for thread in active_threads.values():
             remaining = max(0.0, deadline - time.time())
             if remaining <= 0:
                 break
-
             thread.join(timeout=remaining)
 
-        logging.warning("Closing client connections...")
+        logging.warning("Graceful period expired, closing client connections")
 
         with self.client_by_req_lock:
-            for client_socket in self.client_by_req.values():
-                try:
-                    client_socket.shutdown(socket.SHUT_RDWR)
-                except Exception:
-                    pass
-                try:
-                    client_socket.close()
-                except Exception:
-                    pass
-
-    def _publish_message(self, queue, message: list):
-        """
-        Publishes a message to a queue accessed by multiple threads.
-
-        queue
-            The queue to which the message is being published.
-
-        message
-            The message being published.
-        """
-        with self.publish_lock:
-            queue.send(
-                message_protocol.internal.serialize(message)
-            )
-
-    def _send_response(self, job_id, message, ack, nack):
-        try:
-            fields = message_protocol.internal.deserialize(message)
-            opcode = fields.pop(0)
-            req_id = fields.pop(0)
-
-            if opcode == message_protocol.OPCODE_DATA:
-                with self.client_by_req_lock:
-                    client_socket = self.client_by_req[req_id]
-
-                    message_protocol.send_message(
-                        client_socket=client_socket,
-                        message="", # TODO: What do we send?
-                        opcode=message_protocol.OPCODE_DATA
-                    )
-            elif opcode == message_protocol.OPCODE_EOF:
-                with self.jobs_by_client_lock:
-                    self.jobs_by_client[req_id][job_id] = True
-
-                    finish = True
-                    for job in self.jobs_by_client[req_id].values():
-                        finish = finish and job
-
-                if finish:
-                    logging.info(f"All jobs done for the client with req_id: {req_id}. Goodbye...")
-                    del self.jobs_by_client[req_id]
-                    del self.client_by_req[req_id]
-
-            ack()
-        except Exception:
-            nack()
+            for client in self.client_by_req.values():
+                client.close()
 
     def _publish_eof(self, req_id: int):
-        logging.info(f"Received EOF from client {req_id}. Propagating EOF...")
+        logging.info("Upload EOF message")
 
         message = [message_protocol.OPCODE_EOF, req_id, ""]
 
-        self._publish_message(self.filter_output_queue, message)
-        self._publish_message(self.word_reader_output_queue, message)
+        with self.filter_output_queue_lock:
+            self.filter_output_queue.send(
+                message_protocol.internal.serialize(message)
+            )
+
+        with self.word_reader_output_queue_lock:
+            self.word_reader_output_queue.send(
+                message_protocol.internal.serialize(message)
+            )
+
+        with self.active_threads_lock:
+            self.active_threads.pop(f"{_HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}", None)
 
     def _publish_data(self, req_id: int, batches: int, message: bytes):
-        logging.info(f"Received DATA batch from client {req_id}. Publishing rows...")
-        
-        lines = message_protocol.batching.unbatch_messages(message, batches)
-        for line in lines:
+        logging.info("Upload DATA message")
+
+        for line in message_protocol.batching.unbatch_messages(message, batches):
             wikipedia_article = entity.WikipediaArticle.from_csv(line)
 
             filter_message = [message_protocol.OPCODE_DATA, req_id] + wikipedia_article.to_list(
                 name=True, url=True, image=True, in_language=True, date_modified=True, sections=True
             )
-            self._publish_message(self.filter_output_queue, filter_message)
+            with self.filter_output_queue_lock:
+                self.filter_output_queue.send(
+                    message_protocol.internal.serialize(filter_message)
+                )
 
             word_reader_message = [message_protocol.OPCODE_DATA, req_id] + wikipedia_article.to_list(
                 name=True, sections=True
             )
-            self._publish_message(self.word_reader_output_queue, word_reader_message)
+            with self.word_reader_output_queue_lock:
+                self.word_reader_output_queue.send(
+                    message_protocol.internal.serialize(word_reader_message)
+                )
 
-    def _upload_data(self, client_socket: socket.socket, req_id: int):
-        logging.info(f"Upload data for client with req_id: {req_id}")
-        
+    def _upload(self, client_socket: socket.socket, req_id: int):
         try:
             while self.is_running:
                 opcode, *args = message_protocol.external.recv_message(client_socket)
@@ -184,63 +142,80 @@ class Gateway:
                     self._publish_eof(req_id)
                     return
                 elif opcode == message_protocol.OPCODE_DATA:
-                    self._publish_data(req_id, *args)  # type: ignore
+                    self._publish_data(req_id, *args)
                 else:
-                    logging.warning(f"Unexpected opcode from client {req_id}: {opcode}")
+                    logging.warning("Unexpected opcode")
         except Exception:
             if self.is_running:
-                logging.exception(f"Error while uploading data for client with req_id: {req_id}")
+                logging.exception("Error while uploading data")
 
-        logging.info(f"Data for client with req_id: {req_id} has been uploaded")
+            self._remove_client(req_id)
 
-    def _handle_client(self, client_socket: socket.socket):
+    def _download(self, job_id, message, ack, nack):
+        try:
+            fields = message_protocol.internal.deserialize(message)
+            opcode, req_id, *_data = fields
+
+            with self.client_by_req_lock:
+                client = self.client_by_req[req_id]
+
+                if opcode == message_protocol.OPCODE_DATA:
+                    # TODO: Send the data to the client
+                    pass
+                elif opcode == message_protocol.OPCODE_EOF:
+                    if client.finish(job_id):
+                        logging.info("All jobs finished")
+                        # TODO: Send general EOF to the client
+                        
+                        client.close()
+                        del self.client_by_req[req_id]
+            ack()
+        except:
+            nack()
+
+    def _handle_client_request(self, client_socket):
         req_id = next(self.req_counter)
-        logging.info(f"Connected client with req_id: {req_id}")
-
-        with self.jobs_by_client_lock:
-            self.jobs_by_client[req_id] = {
-                job_id: False
-                for job_id in range(1, _JOBS + 1)
-            }
+        logging.info(f"A new client has connected, assign req_id={req_id}")
 
         thread = threading.Thread(
-            target=self._upload_data,
+            target=self._upload,
             args=(client_socket, req_id),
-            name=f"ClientWorker-{req_id}"
+            name=f"{_HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"
         )
 
         with self.client_by_req_lock:
-            self.client_by_req[req_id] = client_socket
+            self.client_by_req[req_id] = client.Client(client_socket, _JOBS)
 
-        self.threads.append(thread)
+        with self.active_threads_lock:
+            self.active_threads[f"{_HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"] = thread
+
         thread.start()
 
-    def _start_job_consumers(self):
-        """
-        Spawns a thread to consume from each queue, through which the
-        server will receive the responses from the various jobs.
-        """
+    def _handle_client_response(self):
         for job_id, queue in self.input_queues.items():
-            callback = functools.partial(self._send_response, job_id=job_id)
+            callback = functools.partial(self._download, job_id=job_id)
             thread = threading.Thread(
                 target=queue.start_consuming,
                 args=(callback,),
-                name=f"Consumer-Job-{job_id}"
+                name=f"{_HANDLE_CLIENT_RESPONSE_PREFIX}-{job_id}"
             )
 
-            self.threads.append(thread)
+            with self.active_threads_lock:
+                self.active_threads[f"{_HANDLE_CLIENT_RESPONSE_PREFIX}-{job_id}"] = thread
+
             thread.start()
 
     def start(self):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
                 self.server_socket = server_socket
-                
+
+                logging.info("Listening to connections")
                 server_socket.bind((self.server_host, self.server_port))
                 server_socket.listen()
-                self._start_job_consumers()
 
-                logging.info(f"Gateway listening on {self.server_host}:{self.server_port}...")
+                self._handle_client_response()
+
                 while self.is_running:
                     try:
                         client_socket, _ = server_socket.accept()
@@ -248,11 +223,11 @@ class Gateway:
                         if not self.is_running:
                             break
                         raise
-                    self._handle_client(client_socket)
+
+                    self._handle_client_request(client_socket)
         finally:
             self._wait_for_threads()
 
-            # close the queues...
             self.filter_output_queue.close()
             self.word_reader_output_queue.close()
 
