@@ -8,6 +8,7 @@ import signal
 from common import middleware
 from common import message_protocol
 
+from common.hashing.hashing import shard_for
 from stopwords import STOPWORDS
 
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
@@ -28,12 +29,6 @@ WORD_RE = re.compile(r"\w+", re.UNICODE)
 def tokenize(abstract: str, language: str | None) -> list[str]:
     stopwords = STOPWORDS.get(language or "", set())
     return [w for w in WORD_RE.findall(abstract.lower()) if w not in stopwords]
-
-
-def shard_for(req_id: int, word: str) -> int:
-    digest = hashlib.md5(f"{req_id}:{word}".encode("utf-8")).hexdigest()
-    return int(digest, 16) % SUM_WORDS_COUNT
-
 
 class WordReader:
     def __init__(self):
