@@ -215,6 +215,22 @@ class Gateway:
         self.threads.append(thread)
         thread.start()
 
+    def _start_job_consumers(self):
+        """
+        Spawns a thread to consume from each queue, through which the
+        server will receive the responses from the various jobs.
+        """
+        for job_id, queue in self.input_queues.items():
+            callback = functools.partial(self._send_response, job_id=job_id)
+            thread = threading.Thread(
+                target=queue.start_consuming,
+                args=(callback,),
+                name=f"Consumer-Job-{job_id}"
+            )
+
+            self.threads.append(thread)
+            thread.start()
+
     def start(self):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
@@ -222,17 +238,7 @@ class Gateway:
                 
                 server_socket.bind((self.server_host, self.server_port))
                 server_socket.listen()
-
-                for job_id, queue in self.input_queues.items():
-                    callback = functools.partial(self._send_response, job_id=job_id)
-                    thread = threading.Thread(
-                        target=queue.start_consuming,
-                        args=(callback,),
-                        name=f"Consumer-Job-{job_id}"
-                    )
-
-                    self.threads.append(thread)
-                    thread.start()
+                self._start_job_consumers()
 
                 logging.info(f"Gateway listening on {self.server_host}:{self.server_port}...")
                 while self.is_running:
