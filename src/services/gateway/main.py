@@ -1,13 +1,13 @@
-import functools
 import os
 import time
 import signal
 import socket
+import client
 import logging
+import functools
 import threading
 import itertools
 
-from gateway import client
 from common import entity, middleware, message_protocol
 
 _JOBS = 5
@@ -96,16 +96,20 @@ class Gateway:
     def _publish_eof(self, req_id: int):
         logging.info("Upload EOF message")
 
-        message = [message_protocol.OPCODE_EOF, req_id, ""]
-
         with self.filter_output_queue_lock:
             self.filter_output_queue.send(
-                message_protocol.internal.serialize(message)
+                message_protocol.internal.serialize(
+                    opcode=message_protocol.OPCODE_EOF,
+                    req_id=req_id
+                )
             )
 
         with self.word_reader_output_queue_lock:
             self.word_reader_output_queue.send(
-                message_protocol.internal.serialize(message)
+                message_protocol.internal.serialize(
+                    opcode=message_protocol.OPCODE_EOF,
+                    req_id=req_id
+                )
             )
 
         with self.active_threads_lock:
@@ -117,20 +121,30 @@ class Gateway:
         for line in message_protocol.batching.unbatch_messages(message, batches):
             wikipedia_article = entity.WikipediaArticle.from_csv(line)
 
-            filter_message = [message_protocol.OPCODE_DATA, req_id] + wikipedia_article.to_list(
+            filter_list = wikipedia_article.to_list(
                 name=True, url=True, image=True, in_language=True, date_modified=True, sections=True
             )
             with self.filter_output_queue_lock:
                 self.filter_output_queue.send(
-                    message_protocol.internal.serialize(filter_message)
+                    message_protocol.internal.serialize(
+                        opcode=message_protocol.OPCODE_DATA,
+                        req_id=req_id,
+                        batches=1,
+                        message=[filter_list]
+                    )
                 )
 
-            word_reader_message = [message_protocol.OPCODE_DATA, req_id] + wikipedia_article.to_list(
-                name=True, sections=True
+            word_reader_list = wikipedia_article.to_list(
+                abstract=True, url=True, date_modified=True, in_language=True,
             )
             with self.word_reader_output_queue_lock:
                 self.word_reader_output_queue.send(
-                    message_protocol.internal.serialize(word_reader_message)
+                    message_protocol.internal.serialize(
+                        opcode=message_protocol.OPCODE_DATA,
+                        req_id=req_id,
+                        batches=1,
+                        message=[word_reader_list]
+                    )
                 )
 
     def _upload(self, client_socket: socket.socket, req_id: int):
