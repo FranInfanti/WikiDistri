@@ -1,4 +1,4 @@
-from .external import send_message, recv_message, OPCODE_EOF, OPCODE_DATA, OPCODE_ACK
+from .external import send_message, recv_message
 from .internal import serialize, deserialize
 from .batching import unbatch_messages
 

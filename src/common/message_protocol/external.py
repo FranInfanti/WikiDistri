@@ -6,7 +6,7 @@ from common import message_protocol
 _HEADER_SIZE = 5
 _MAX_PAYLOAD_SIZE = 65535
 
-def recv_message(client_socket: socket):
+def recv_message(client_socket: socket.socket):
     """
     Returns the opcode, number of batches and payload recevied in the packet.
     
@@ -26,7 +26,7 @@ def recv_message(client_socket: socket):
 
     return (opcode, batch, payload)
 
-def send_message(client_socket: socket, message: str | bytes, opcode: int, batches: int = 1):
+def send_message(client_socket: socket.socket, message: str | bytes, opcode: int, batches: int = 1):
     """
     Sends a message via a TCP/IP connection. The message can be a simple string or a entire
     batch; in the latter case, the number of batches must be specified.
