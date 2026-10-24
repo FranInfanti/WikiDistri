@@ -2,7 +2,7 @@ import json
 
 from common import message_protocol
 
-def serialize(opcode: int, req_id: int, batches: int = 0, message: list[list] = []):
+def serialize(opcode: int, req_id: int, batches: int = 0, message = []):
     """
     Returns 
 
