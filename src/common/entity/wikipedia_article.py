@@ -33,6 +33,12 @@ class WikipediaArticle:
 
         return NotImplemented
 
+    def __le__(self, other) -> bool:
+        if isinstance(other, int):
+            return self.date_modified.year <= other if self.date_modified else False
+
+        return NotImplemented
+
     @classmethod
     def from_csv(cls, line: str):
         stream = io.StringIO(line)
