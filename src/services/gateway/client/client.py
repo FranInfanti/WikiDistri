@@ -6,10 +6,14 @@ class Client:
     def __init__(self, client_socket: socket.socket, jobs: int):
         self.client_socket = client_socket
         self.send_lock = threading.Lock()
+        self.articles_sent = 0
         self.jobs = {
             job_id: False
             for job_id in range(1, jobs + 1)
         }
+
+    def record_articles_sent(self, count: int):
+        self.articles_sent += count
 
     def close(self):
         try:

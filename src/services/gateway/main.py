@@ -58,8 +58,8 @@ class Gateway:
         self.active_threads = {}
         self.active_threads_lock = threading.Lock()
 
-        self.client_by_req = {}
-        self.client_by_req_lock = threading.Lock()
+        self.clients_requests = {}
+        self.clients_requests_lock = threading.Lock()
 
     def _sigterm_handler(self, _signum, _frame):
         logging.info("SIGTERM signal received, setting shutdown flag and closing listener")
@@ -89,18 +89,19 @@ class Gateway:
 
         logging.warning("Graceful period expired, closing client connections")
 
-        with self.client_by_req_lock:
-            for client in self.client_by_req.values():
+        with self.clients_requests_lock:
+            for client in self.clients_requests.values():
                 client.close()
 
-    def _publish_eof(self, req_id: int):
+    def _publish_eof(self, req_id: int, articles_sent: int):
         logging.info("Upload EOF message")
 
         with self.filter_output_queue_lock:
             self.filter_output_queue.send(
                 message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_EOF,
-                    req_id=req_id
+                    req_id=req_id,
+                    message=articles_sent
                 )
             )
 
@@ -108,7 +109,8 @@ class Gateway:
             self.word_reader_output_queue.send(
                 message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_EOF,
-                    req_id=req_id
+                    req_id=req_id,
+                    message=articles_sent
                 )
             )
 
@@ -147,16 +149,17 @@ class Gateway:
                     )
                 )
 
-    def _upload(self, client_socket: socket.socket, req_id: int):
+    def _upload(self, req_id: int, client_req: client.Client):
         try:
             while self.is_running:
-                opcode, *args = message_protocol.external.recv_message(client_socket)
+                opcode, batches, payload = message_protocol.external.recv_message(client_req.client_socket)
 
                 if opcode == message_protocol.OPCODE_EOF:
-                    self._publish_eof(req_id)
+                    self._publish_eof(req_id, client_req.articles_sent)
                     return
                 elif opcode == message_protocol.OPCODE_DATA:
-                    self._publish_data(req_id, *args)
+                    self._publish_data(req_id, batches, payload)
+                    client_req.record_articles_sent(batches)
                 else:
                     logging.warning("Unexpected opcode")
         except Exception:
@@ -170,8 +173,8 @@ class Gateway:
             fields = message_protocol.internal.deserialize(message)
             opcode, req_id, *_data = fields
 
-            with self.client_by_req_lock:
-                client = self.client_by_req[req_id]
+            with self.clients_requests_lock:
+                client = self.clients_requests[req_id]
 
                 if opcode == message_protocol.OPCODE_DATA:
                     # TODO: Send the data to the client
@@ -182,7 +185,7 @@ class Gateway:
                         # TODO: Send general EOF to the client
                         
                         client.close()
-                        del self.client_by_req[req_id]
+                        del self.clients_requests[req_id]
             ack()
         except:
             nack()
@@ -191,14 +194,15 @@ class Gateway:
         req_id = next(self.req_counter)
         logging.info(f"A new client has connected, assign req_id={req_id}")
 
+        client_req = client.Client(client_socket, _JOBS)
         thread = threading.Thread(
             target=self._upload,
-            args=(client_socket, req_id),
+            args=(req_id, client_req),
             name=f"{_HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"
         )
 
-        with self.client_by_req_lock:
-            self.client_by_req[req_id] = client.Client(client_socket, _JOBS)
+        with self.clients_requests_lock:
+            self.clients_requests[req_id] = client_req
 
         with self.active_threads_lock:
             self.active_threads[f"{_HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"] = thread
