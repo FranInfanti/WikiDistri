@@ -6,6 +6,6 @@ RUN pip install nltk && python -c "import nltk; nltk.download('stopwords')"
 WORKDIR /app
 
 COPY common ./common/
-COPY services/gateway .
+COPY services/reader .
 
 ENTRYPOINT ["python3", "main.py"]
