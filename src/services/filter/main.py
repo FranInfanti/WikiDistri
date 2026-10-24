@@ -66,11 +66,16 @@ class Filter:
         self.requests_states = {}
 
     def _sigterm_handler(self, _signum, _frame):
-        logging.info("Shutdown signal received, setting shutdown flag and closing listener...")
+        logging.info("SIGTERM signal received, setting shutdown flag")
         self.is_running = False
 
         try:
             self.input_queue.stop_consuming()
+        except Exception:
+            pass
+
+        try:
+            self.input_exchange.stop_consuming_threadsafe()
         except Exception:
             pass
 
@@ -235,8 +240,12 @@ class Filter:
                 raise
         finally:
             self.input_queue.close()
+            self.input_exchange.close()
             self.gateway_output_queue.close()
             self.image_downloader_ouput_queue.close()
+
+            for output_exchange in self.output_exchange:
+                output_exchange.close()
 
 def main():
     logging.basicConfig(
