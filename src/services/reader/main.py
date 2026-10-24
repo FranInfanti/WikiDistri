@@ -88,11 +88,15 @@ class WordReader:
 
     def process_message(self, message, ack, nack):
         try:
+            logging.info(f"req_id= {message}")        
             opcode, req_id, _batches, payload = message_protocol.internal.deserialize(message) # Despues a ver si funcionaria con batches
  
             if opcode == message_protocol.OPCODE_DATA:
                 self._handle_articles(req_id, payload)
                 self.barrier.record_articles(req_id, len(payload))
+                logging.debug("req_id=%s: processed %s articles", req_id, len(payload))
+                # process_message, rama DATA, después de procesar el batch
+                
             elif opcode == message_protocol.OPCODE_EOF:
                 logging.info(f"Received EOF for req_id: {req_id}, articles sent: {payload}")
                 self.barrier.on_eof(req_id, payload)
@@ -173,6 +177,7 @@ class WordReader:
                         message=join_batch,
                     )
                 )
+                logging.debug("req_id=%s -> %s: %s articles", req_id, JOIN_QUEUE, len(join_batch))
  
             if amount_batch:
                 self.sum_amount_queue.send(
@@ -183,6 +188,7 @@ class WordReader:
                         message=amount_batch,
                     )
                 )
+                logging.debug("req_id=%s -> %s: %s articles", req_id, SUM_AMOUNT_QUEUE, len(amount_batch))
 
 
     def _forward_eof(self, req_id: int):
@@ -195,10 +201,13 @@ class WordReader:
         )
  
         with self.send_lock:
-            for queue in self.sum_words_queues:
+            for i, queue in enumerate(self.sum_words_queues):
                 queue.send(eof)
+                logging.info("req_id=%s: EOF -> %s_%s", req_id, SUM_WORDS_QUEUE_PREFIX, i)
             self.join_queue.send(eof)
+            logging.info("req_id=%s: EOF -> %s", req_id, JOIN_QUEUE)
             self.sum_amount_queue.send(eof)
+            logging.info("req_id=%s: EOF -> %s", req_id, SUM_AMOUNT_QUEUE)
 
     def start(self):
         try:
