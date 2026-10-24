@@ -128,6 +128,11 @@ class EofBarrier:
         if len(state.peer_counts) < len(self._peers):
             return False
 
+        logging.info(
+            "req_id=%s: own=%s peers=%s expected=%s",
+            req_id, state.articles_recv, state.peer_counts, state.expected_articles
+        )
+
         total = sum(state.peer_counts) + state.articles_recv
         if total == state.expected_articles:
             self._broadcast(message_protocol.OPCODE_COMMIT, req_id)
@@ -184,6 +189,7 @@ class EofBarrier:
 
             with self._lock:
                 if opcode == message_protocol.OPCODE_PREPARE:
+                    logging.info("req_id=%s: PREPARE from reader %s, replying %s", req_id, payload, self._state(req_id).articles_recv)
                     self._send_to(
                         peer_id=payload,
                         opcode=message_protocol.OPCODE_OK,
@@ -196,6 +202,7 @@ class EofBarrier:
                         state.peer_counts.append(payload)
                         done = self._evaluate(req_id)
                 elif opcode == message_protocol.OPCODE_COMMIT:
+                    logging.info("req_id=%s: COMMIT received", req_id)
                     self._states.pop(req_id, None)
                 else:
                     logging.warning("Unexpected control opcode: %s", opcode)
