@@ -19,9 +19,47 @@ HOST = os.environ["HOST"]
 PORT = int(os.environ["PORT"])
 
 MOM_HOST = os.environ["MOM_HOST"]
+GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
 FILTER_OUTPUT_QUEUE = os.environ["FILTER_OUTPUT_QUEUE"]
 WORD_READER_OUTPUT_QUEUE = os.environ["WORD_READER_OUTPUT_QUEUE"]
-GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
+
+def job_format(job_id: int, messages: list):
+    batch = []
+    for message in messages:
+        if job_id == 1:
+            # [..., [ [url_0, date_modified_0], ..., [url_n, date_modified_n] ]]
+            url, date_modified = message
+            batch.append(
+                f"{job_id},{url},{date_modified}"
+            )
+        elif job_id == 2:
+            # [..., [ [name_0, url_0, image_0], ..., [name_n, url_n, image_n] ]]
+            name, url, image_bytes = message
+            batch.append(
+                f"{job_id},{name},{url},{image_bytes}"
+            )
+        elif job_id == 3:
+            # [..., [ word_0, ..., word_n ]]
+            word = message
+            batch.append(
+                f"{job_id},{word}"
+            )
+        elif job_id == 4:
+            # [..., [ word_0, ..., word_n ]]
+            word = message
+            batch.append(
+                f"{job_id},{word}"
+            )
+        elif job_id == 5:
+            # [..., [ [url_0, amount_0], ..., [url_n, amount_n] ]]
+            url, amount = message
+            batch.append(
+                f"{job_id},{url},{amount}"
+            )
+        else:
+            raise ValueError(f"Unknown job id: {job_id}")
+    
+    return message_protocol.batching.batch_messages(batch)
 
 class Gateway:
 
@@ -79,9 +117,9 @@ class Gateway:
             input_queue.stop_consuming_threadsafe()
 
         with self.active_threads_lock:
-            active_threads = self.active_threads
+            active_threads = list(self.active_threads.values())
 
-        for thread in active_threads.values():
+        for thread in active_threads:
             remaining = max(0.0, deadline - time.time())
             if remaining <= 0:
                 break
@@ -152,7 +190,9 @@ class Gateway:
     def _upload(self, req_id: int, client_req: client.Client):
         try:
             while self.is_running:
-                opcode, batches, payload = message_protocol.external.recv_message(client_req.client_socket)
+                opcode, batches, payload = ( 
+                    message_protocol.external.recv_message(client_req.client_socket)
+                )
 
                 if opcode == message_protocol.OPCODE_EOF:
                     self._publish_eof(req_id, client_req.articles_sent)
@@ -165,27 +205,43 @@ class Gateway:
         except Exception:
             if self.is_running:
                 logging.exception("Error while uploading data")
-
-            self._remove_client(req_id)
+        finally:
+            with self.active_threads_lock:
+                del self.active_threads[f"{_HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"]
 
     def _download(self, job_id, message, ack, nack):
         try:
-            fields = message_protocol.internal.deserialize(message)
-            opcode, req_id, *_data = fields
+            # [OPCODE, REQ_ID, BATCHES, [ ... ]]
+            opcode, req_id, batches, messages = (
+                message_protocol.internal.deserialize(message)
+            )
 
             with self.clients_requests_lock:
                 client = self.clients_requests[req_id]
 
                 if opcode == message_protocol.OPCODE_DATA:
-                    # TODO: Send the data to the client
-                    pass
+                    message_bytes = job_format(job_id, messages)
+                    message_protocol.external.send_message(
+                        client_socket=client.client_socket,
+                        message=message_bytes,
+                        opcode=message_protocol.OPCODE_DATA,
+                        batches=batches
+                    )                        
                 elif opcode == message_protocol.OPCODE_EOF:
                     if client.finish(job_id):
                         logging.info("All jobs finished")
-                        # TODO: Send general EOF to the client
-                        
+
+                        message_protocol.external.send_message(
+                            client_socket=client.client_socket,
+                            message=b"",
+                            opcode=message_protocol.OPCODE_EOF,
+                            batches=0
+                        )
+
                         client.close()
                         del self.clients_requests[req_id]
+                else:
+                    logging.info("Unknown opcode")
             ack()
         except:
             nack()
@@ -233,7 +289,6 @@ class Gateway:
                 server_socket.listen()
 
                 self._handle_client_response()
-
                 while self.is_running:
                     try:
                         client_socket, _ = server_socket.accept()
@@ -241,7 +296,6 @@ class Gateway:
                         if not self.is_running:
                             break
                         raise
-
                     self._handle_client_request(client_socket)
         finally:
             self._wait_for_threads()
