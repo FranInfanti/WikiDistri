@@ -10,7 +10,6 @@ import itertools
 
 from common import entity, middleware, message_protocol
 
-_JOBS = 5
 _TIMEOUT = 5.0
 _HANDLE_CLIENT_REQUEST_PREFIX = "Uploader"
 _HANDLE_CLIENT_RESPONSE_PREFIX = "Consumer"
@@ -18,6 +17,7 @@ _HANDLE_CLIENT_RESPONSE_PREFIX = "Consumer"
 HOST = os.environ["HOST"]
 PORT = int(os.environ["PORT"])
 
+JOBS = int(os.environ["JOBS"])
 MOM_HOST = os.environ["MOM_HOST"]
 GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
 FILTER_OUTPUT_QUEUE = os.environ["FILTER_OUTPUT_QUEUE"]
@@ -81,7 +81,7 @@ class Gateway:
                 host=MOM_HOST,
                 queue_name=f"{GATEWAY_PREFIX}_{job_id}"
             )
-            for job_id in range(1, _JOBS + 1)
+            for job_id in range(1, JOBS + 1)
         }
 
         self.is_running = True
@@ -274,7 +274,7 @@ class Gateway:
         req_id = next(self.req_counter)
         logging.info(f"Accepted client connection; assigned req_id={req_id}")
 
-        client_req = client.Client(client_socket, _JOBS)
+        client_req = client.Client(client_socket, JOBS)
         thread = threading.Thread(
             target=self._upload,
             args=(req_id, client_req),
