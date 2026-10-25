@@ -111,7 +111,6 @@ class Gateway:
 
     def _wait_for_threads(self):
         deadline = time.time() + _TIMEOUT
-        logging.info(f"Waiting up to {_TIMEOUT}s for active threads to finish")
 
         for input_queue in self.input_queues.values():
             input_queue.stop_consuming_threadsafe()
@@ -119,13 +118,18 @@ class Gateway:
         with self.active_threads_lock:
             active_threads = list(self.active_threads.values())
 
+        logging.info(f"Waiting up to {_TIMEOUT} seconds for {len(active_threads)} active threads to stop")
         for thread in active_threads:
             remaining = max(0.0, deadline - time.time())
             if remaining <= 0:
                 break
             thread.join(timeout=remaining)
 
-        logging.warning("Graceful period expired, closing client connections")
+        remaining_threads = [thread.name for thread in active_threads if thread.is_alive()]
+        if remaining_threads:
+            logging.warning(f"Shutdown timed out with still {len(remaining_threads)} active threads")
+        else:
+            logging.info("All active threads stopped; closing client connections")
 
         with self.clients_requests_lock:
             for client in self.clients_requests.values():
@@ -181,24 +185,28 @@ class Gateway:
                 )
 
     def _upload(self, req_id: int, client_req: client.Client):
-        logging.info("Start uploading")
+        logging.info(f"Started upload for req_id={req_id}")
         try:
             while self.is_running:
                 opcode, batches, payload = ( 
                     message_protocol.external.recv_message(client_req.client_socket) # One thread per client
                 )
                 if opcode == message_protocol.OPCODE_EOF:
-                    logging.info("End of upload")
+                    logging.info(
+                        f"Upload completed for req_id={req_id}; articles_sent={client_req.articles_sent}"
+                    )
                     self._publish_eof(req_id, client_req.articles_sent)
                     return
                 elif opcode == message_protocol.OPCODE_DATA:
                     self._publish_data(req_id, batches, payload)
                     client_req.record_articles_sent(batches)
                 else:
-                    logging.warning("Unexpected opcode")
+                    logging.warning(
+                        f"Received unexpected opcode={opcode} while uploading req_id={req_id}",
+                    )
         except Exception:
             if self.is_running:
-                logging.exception("Error while uploading data")
+                logging.exception("Failed to upload data for req_id=%s", req_id)
             with self.active_threads_lock:
                 client_req.close()
                 self.clients_requests.pop(req_id, None)
@@ -207,7 +215,7 @@ class Gateway:
                 del self.active_threads[f"{_HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"]
 
     def _download(self, job_id, message, ack, nack):
-        logging.info("Received a message from the system")
+        req_id = None
         try:
             opcode, req_id, batches, messages = (
                 message_protocol.internal.deserialize(message)
@@ -218,7 +226,9 @@ class Gateway:
 
             if not client_req:
                 if self.is_running:
-                    logging.info(f"An error ocurred with client: {req_id}")
+                    logging.debug(
+                        f"Discarding response for inactive req_id={req_id} from job_id={job_id}",
+                    )
                 ack() # client no longer exists, but we still ack the message
                 return
 
@@ -232,7 +242,7 @@ class Gateway:
             elif opcode == message_protocol.OPCODE_EOF:
                 finished = client_req.record_job_finished(job_id)
                 if finished:
-                    logging.info("All jobs finished")
+                    logging.info(f"All jobs finished for req_id={req_id}")
                     with self.clients_requests_lock:
                         self.clients_requests.pop(req_id, None)
 
@@ -243,20 +253,26 @@ class Gateway:
                     )
                     client_req.close()
             else:
-                logging.info("Unknown opcode")
+                logging.warning(
+                    f"Received unexpected opcode={opcode} for req_id={req_id} from job_id={job_id}",
+                )
             ack()
         except client.ClientSendError:
             if self.is_running:
-                logging.exception(f"An error occurred with client: {req_id}")
+                logging.exception(
+                    f"Failed to send response to req_id={req_id} from job_id={job_id}",
+                )
             ack()
         except Exception:
             if self.is_running:
-                logging.exception("Unexpected error")
+                logging.exception(
+                    f"Failed to process response for req_id={req_id} from job_id={job_id}",
+                )
             nack()
 
-    def _handle_client_request(self, client_socket):
+    def _handle_client_request(self, client_socket: socket.socket):
         req_id = next(self.req_counter)
-        logging.info(f"A new client has connected, assign req_id={req_id}")
+        logging.info(f"Accepted client connection; assigned req_id={req_id}")
 
         client_req = client.Client(client_socket, _JOBS)
         thread = threading.Thread(
@@ -292,9 +308,9 @@ class Gateway:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
                 self.server_socket = server_socket
 
-                logging.info("Listening to connections")
                 server_socket.bind((self.server_host, self.server_port))
                 server_socket.listen()
+                logging.info("Listening to connections")
 
                 self._handle_client_response()
                 while self.is_running:
