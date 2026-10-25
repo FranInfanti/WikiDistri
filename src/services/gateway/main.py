@@ -132,8 +132,6 @@ class Gateway:
                 client.close()
 
     def _publish_eof(self, req_id: int, articles_sent: int):
-        logging.info("Upload EOF message")
-
         with self.filter_output_queue_lock:
             self.filter_output_queue.send(
                 message_protocol.internal.serialize(
@@ -152,12 +150,7 @@ class Gateway:
                 )
             )
 
-        with self.active_threads_lock:
-            self.active_threads.pop(f"{_HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}", None)
-
     def _publish_data(self, req_id: int, batches: int, message: bytes):
-        logging.info("Upload DATA message")
-
         for line in message_protocol.batching.unbatch_messages(message, batches):
             wikipedia_article = entity.WikipediaArticle.from_csv(line)
 
@@ -188,13 +181,14 @@ class Gateway:
                 )
 
     def _upload(self, req_id: int, client_req: client.Client):
+        logging.info("Start uploading")
         try:
             while self.is_running:
                 opcode, batches, payload = ( 
-                    message_protocol.external.recv_message(client_req.client_socket)
+                    message_protocol.external.recv_message(client_req.client_socket) # One thread per client
                 )
-
                 if opcode == message_protocol.OPCODE_EOF:
+                    logging.info("End of upload")
                     self._publish_eof(req_id, client_req.articles_sent)
                     return
                 elif opcode == message_protocol.OPCODE_DATA:
@@ -205,45 +199,59 @@ class Gateway:
         except Exception:
             if self.is_running:
                 logging.exception("Error while uploading data")
+            with self.active_threads_lock:
+                client_req.close()
+                self.clients_requests.pop(req_id, None)
         finally:
             with self.active_threads_lock:
                 del self.active_threads[f"{_HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"]
 
     def _download(self, job_id, message, ack, nack):
+        logging.info("Received a message from the system")
         try:
-            # [OPCODE, REQ_ID, BATCHES, [ ... ]]
             opcode, req_id, batches, messages = (
                 message_protocol.internal.deserialize(message)
             )
 
             with self.clients_requests_lock:
-                client = self.clients_requests[req_id]
+                client_req = self.clients_requests.get(req_id, None)
 
-                if opcode == message_protocol.OPCODE_DATA:
-                    message_bytes = job_format(job_id, messages)
-                    message_protocol.external.send_message(
-                        client_socket=client.client_socket,
-                        message=message_bytes,
-                        opcode=message_protocol.OPCODE_DATA,
-                        batches=batches
-                    )                        
-                elif opcode == message_protocol.OPCODE_EOF:
-                    if client.finish(job_id):
-                        logging.info("All jobs finished")
+            if not client_req:
+                if self.is_running:
+                    logging.info(f"An error ocurred with client: {req_id}")
+                ack() # client no longer exists, but we still ack the message
+                return
 
-                        message_protocol.external.send_message(
-                            client_socket=client.client_socket,
-                            message=b"",
-                            opcode=message_protocol.OPCODE_EOF,
-                            batches=0
-                        )
+            if opcode == message_protocol.OPCODE_DATA:
+                message_bytes = job_format(job_id, messages)
+                client_req.send(
+                    opcode=message_protocol.OPCODE_DATA,
+                    batches=batches,
+                    message=message_bytes,
+                )
+            elif opcode == message_protocol.OPCODE_EOF:
+                finished = client_req.record_job_finished(job_id)
+                if finished:
+                    logging.info("All jobs finished")
+                    with self.clients_requests_lock:
+                        self.clients_requests.pop(req_id, None)
 
-                        client.close()
-                        del self.clients_requests[req_id]
-                else:
-                    logging.info("Unknown opcode")
+                    client_req.send(
+                        opcode=message_protocol.OPCODE_EOF,
+                        batches=0,
+                        message=b""
+                    )
+                    client_req.close()
+            else:
+                logging.info("Unknown opcode")
             ack()
-        except:
+        except client.ClientSendError:
+            if self.is_running:
+                logging.exception(f"An error occurred with client: {req_id}")
+            ack()
+        except Exception:
+            if self.is_running:
+                logging.exception("Unexpected error")
             nack()
 
     def _handle_client_request(self, client_socket):
