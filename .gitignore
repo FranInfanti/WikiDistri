@@ -220,3 +220,6 @@ __marimo__/
 
 # Input files
 input/
+
+# Output files
+output/
