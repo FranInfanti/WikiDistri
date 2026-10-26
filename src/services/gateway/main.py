@@ -19,6 +19,7 @@ PORT = int(os.environ["PORT"])
 
 JOBS = int(os.environ["JOBS"])
 MOM_HOST = os.environ["MOM_HOST"]
+BATCH_SIZE = int(os.environ["BATCH_SIZE"])
 GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
 FILTER_OUTPUT_QUEUE = os.environ["FILTER_OUTPUT_QUEUE"]
 WORD_READER_OUTPUT_QUEUE = os.environ["WORD_READER_OUTPUT_QUEUE"]
@@ -155,34 +156,89 @@ class Gateway:
             )
 
     def _publish_data(self, req_id: int, batches: int, message: bytes):
+        batch_filter = []
+        serialized_filter_batch = b""
+
+        batch_word_reader = []
+        serialized_word_reader_batch = b""
+
         for line in message_protocol.batching.unbatch_messages(message, batches):
             wikipedia_article = entity.WikipediaArticle.from_csv(line)
 
             filter_list = wikipedia_article.to_list(
                 name=True, url=True, image=True, in_language=True, date_modified=True, sections=True
             )
-            with self.filter_output_queue_lock:
-                self.filter_output_queue.send(
-                    message_protocol.internal.serialize(
-                        opcode=message_protocol.OPCODE_DATA,
-                        req_id=req_id,
-                        batches=1,
-                        message=[filter_list]
-                    )
-                )
-
             word_reader_list = wikipedia_article.to_list(
                 abstract=True, url=True, date_modified=True, in_language=True,
             )
-            with self.word_reader_output_queue_lock:
-                self.word_reader_output_queue.send(
-                    message_protocol.internal.serialize(
-                        opcode=message_protocol.OPCODE_DATA,
-                        req_id=req_id,
-                        batches=1,
-                        message=[word_reader_list]
-                    )
+
+            candidate_filter_batch = message_protocol.internal.serialize(
+                opcode=message_protocol.OPCODE_DATA,
+                req_id=req_id,
+                batches=len(batch_filter) + 1,
+                message=[*batch_filter, filter_list]
+            )
+            if batch_filter and (
+                len(batch_filter) >= BATCH_SIZE
+                or len(candidate_filter_batch) > message_protocol.MAX_RABBITMQ_MESSAGE_SIZE
+            ):
+                with self.filter_output_queue_lock:
+                    self.filter_output_queue.send(serialized_filter_batch)
+
+                batch_filter = []
+                candidate_filter_batch = message_protocol.internal.serialize(
+                    opcode=message_protocol.OPCODE_DATA,
+                    req_id=req_id,
+                    batches=1,
+                    message=[filter_list]
                 )
+
+            if len(candidate_filter_batch) > message_protocol.MAX_RABBITMQ_MESSAGE_SIZE:
+                raise ValueError(
+                    f"Serialized filter message for req_id={req_id} exceeds "
+                    f"RabbitMQ's {message_protocol.MAX_RABBITMQ_MESSAGE_SIZE}-byte limit"
+                )
+
+            batch_filter.append(filter_list)
+            serialized_filter_batch = candidate_filter_batch
+
+            candidate_word_reader_batch = message_protocol.internal.serialize(
+                opcode=message_protocol.OPCODE_DATA,
+                req_id=req_id,
+                batches=len(batch_word_reader) + 1,
+                message=[*batch_word_reader, word_reader_list]
+            )
+            if batch_word_reader and (
+                len(batch_word_reader) >= BATCH_SIZE
+                or len(candidate_word_reader_batch) > message_protocol.MAX_RABBITMQ_MESSAGE_SIZE
+            ):
+                with self.word_reader_output_queue_lock:
+                    self.word_reader_output_queue.send(serialized_word_reader_batch)
+
+                batch_word_reader = []
+                candidate_word_reader_batch = message_protocol.internal.serialize(
+                    opcode=message_protocol.OPCODE_DATA,
+                    req_id=req_id,
+                    batches=1,
+                    message=[word_reader_list]
+                )
+
+            if len(candidate_word_reader_batch) > message_protocol.MAX_RABBITMQ_MESSAGE_SIZE:
+                raise ValueError(
+                    f"Serialized word-reader message for req_id={req_id} exceeds "
+                    f"RabbitMQ's {message_protocol.MAX_RABBITMQ_MESSAGE_SIZE}-byte limit"
+                )
+
+            batch_word_reader.append(word_reader_list)
+            serialized_word_reader_batch = candidate_word_reader_batch
+
+        if batch_filter:
+            with self.filter_output_queue_lock:
+                self.filter_output_queue.send(serialized_filter_batch)
+
+        if batch_word_reader:
+            with self.word_reader_output_queue_lock:
+                self.word_reader_output_queue.send(serialized_word_reader_batch)
 
     def _upload(self, req_id: int, client_req: client.Client):
         logging.info(f"Started upload for req_id={req_id}")

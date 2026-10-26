@@ -1,11 +1,12 @@
-from .external import send_message, recv_message
 from .internal import serialize, deserialize
+from .external import send_message, recv_message
 from .batching import batch_messages, batch_payload_size, unbatch_messages
 
-ENDIANNESS = "big"
 ENCODING = "utf-8"
-MAX_PAYLOAD_SIZE = (1 << 32) - 1
+ENDIANNESS = "big"
 MAX_PREFIX_LENGTH = 4
+MAX_PAYLOAD_SIZE = (1 << 32) - 1
+MAX_RABBITMQ_MESSAGE_SIZE = 134217728
 
 OPCODE_EOF = 0
 OPCODE_DATA = 1

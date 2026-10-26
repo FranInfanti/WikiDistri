@@ -86,48 +86,49 @@ class Filter:
         for exchange in exchanges:
             exchange.send(message)
 
-    def _process_data(self, req_id: int, _: int, message: list[list]):
+    def _process_data(self, req_id: int, _: int, messages: list[list]):
         logging.info(f"Receive data with req_id: {req_id}")
 
-        name, url, date_modified, image, in_language, sections = message[0]
-        wikipedia_article = entity.WikipediaArticle(
-            name=name,
-            url=url,
-            date_modified=date_modified,
-            image=image,
-            in_language=in_language,
-            sections=sections
-        )
-
-        if wikipedia_article.is_language("en") and wikipedia_article <= 2020:
-            logging.info(f"Sending result with req_id: {req_id}")
-
-            filter_message = wikipedia_article.to_list(url=True, date_modified=True)
-            self.gateway_output_queue.send(
-                message_protocol.internal.serialize(
-                    opcode=message_protocol.OPCODE_DATA,
-                    req_id=req_id,
-                    batches=1,
-                    message=[filter_message]
-                )
+        for message in messages:
+            name, url, date_modified, image, in_language, sections = message
+            wikipedia_article = entity.WikipediaArticle(
+                name=name,
+                url=url,
+                date_modified=date_modified,
+                image=image,
+                in_language=in_language,
+                sections=sections
             )
 
-        if wikipedia_article < 2020 and (
-            wikipedia_article.section_contains("biography") or wikipedia_article.section_contains("biographie")
-        ):
-            logging.info(f"Sending to download image with req_id: {req_id}")
+            if wikipedia_article.is_language("en") and wikipedia_article <= 2020:
+                logging.info(f"Sending result with req_id: {req_id}")
 
-            image_downloader_message = wikipedia_article.to_list(name=True, url=True, image=True)
-            self.image_downloader_ouput_queue.send(
-                message_protocol.internal.serialize(
-                    opcode=message_protocol.OPCODE_DATA,
-                    req_id=req_id,
-                    batches=1,
-                    message=[image_downloader_message]
+                filter_message = wikipedia_article.to_list(url=True, date_modified=True)
+                self.gateway_output_queue.send(
+                    message_protocol.internal.serialize(
+                        opcode=message_protocol.OPCODE_DATA,
+                        req_id=req_id,
+                        batches=1,
+                        message=[filter_message]
+                    )
                 )
-            )
 
-        self.requests_states.setdefault(req_id, request_state.RequestState()).record_article()
+            if wikipedia_article < 2020 and (
+                wikipedia_article.section_contains("biography") or wikipedia_article.section_contains("biographie")
+            ):
+                logging.info(f"Sending to download image with req_id: {req_id}")
+
+                image_downloader_message = wikipedia_article.to_list(name=True, url=True, image=True)
+                self.image_downloader_ouput_queue.send(
+                    message_protocol.internal.serialize(
+                        opcode=message_protocol.OPCODE_DATA,
+                        req_id=req_id,
+                        batches=1,
+                        message=[image_downloader_message]
+                    )
+                )
+
+            self.requests_states.setdefault(req_id, request_state.RequestState()).record_article()
 
     def _process_eof(self, req_id: int, _: int, articles_sent: int):
         logging.info(f"Receive eof with req_id: {req_id}")
