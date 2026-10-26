@@ -4,8 +4,9 @@ import ast
 
 from datetime import datetime
 from dataclasses import dataclass
+from common import message_protocol
 
-_FIELDS = 8
+_FIELDS = 7
 
 @dataclass
 class WikipediaArticle:
@@ -41,16 +42,18 @@ class WikipediaArticle:
 
     @classmethod
     def from_csv(cls, line: str):
+        csv.field_size_limit(message_protocol.MAX_PAYLOAD_SIZE - message_protocol.MAX_PREFIX_LENGTH)
+
         stream = io.StringIO(line)
         reader = csv.reader(stream)
         fields = ( 
-            [ None if field in ("", "null", "Null", "NaN") else field for field in next(reader) ]
+            [ None if field in ("") else field for field in next(reader) ]
         )
 
         if len(fields) != _FIELDS:
             raise ValueError(f"Expected fields: {_FIELDS} got: {len(fields)}")
 
-        _, abstract, date_modified, image, in_language, name, sections, url = fields
+        abstract, date_modified, image, in_language, name, sections, url = fields
 
         date_modified = datetime.strptime(date_modified, "%Y-%m-%d %H:%M:%S") if date_modified else None
         image = ast.literal_eval(image)["content_url"] if image else None
