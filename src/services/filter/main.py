@@ -51,7 +51,7 @@ class Filter:
         self.input_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
             host=MOM_HOST,
             exchange_name=FILTER_PREFIX,
-            routing_keys=f"{FILTER_PREFIX}_{ID}"
+            routing_keys=[f"{FILTER_PREFIX}_{ID}"]
         )
 
         self.output_exchange = define_exchanges(
@@ -81,8 +81,8 @@ class Filter:
 
     def _publish_message(self, message: bytes, filter_id: int = None):
         exchanges = [self.output_exchange[filter_id]] \
-            if filter_id is not None else self.output_exchange
-        
+            if filter_id is not None else self.output_exchange.values()
+
         for exchange in exchanges:
             exchange.send(message)
 
@@ -130,11 +130,14 @@ class Filter:
         self.requests_states.setdefault(req_id, request_state.RequestState()).record_article()
 
     def _process_eof(self, req_id: int, _: int, articles_sent: int):
+        logging.info(f"Receive eof with req_id: {req_id}")
+        
         req_state = self.requests_states.setdefault(req_id, request_state.RequestState())
         req_state.record_eof(articles_sent)
 
         if FILTER_AMOUNT == 1:
             if req_state.all_articles_recv():
+                logging.info("All articles have been filtered")
                 self.gateway_output_queue.send(
                     message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
@@ -163,6 +166,8 @@ class Filter:
     def _process_prepare(self, req_id: int, _: int, filter_id: int):
         req_state = self.requests_states.setdefault(req_id, request_state.RequestState())
 
+        logging.info(f"Articles received: {req_state.articles_recv}")
+
         self._publish_message(
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_OK,
@@ -178,6 +183,7 @@ class Filter:
 
         if req_state.all_peers(FILTER_AMOUNT):
             if req_state.all_articles_recv():
+                logging.info("All articles have been filtered")
 
                 self._publish_message(
                     message_protocol.internal.serialize(
@@ -195,6 +201,7 @@ class Filter:
 
                 del self.requests_states[req_id]
             else:
+                logging.info("There are still articles that have not been processed")
                 req_state.reset_peers_count()
                 self._publish_message(
                     message_protocol.internal.serialize(
@@ -205,6 +212,8 @@ class Filter:
                 )
 
     def _process_commit(self, req_id: int, *_):
+        logging.info(f"Eliminating the client with req_id={req_id}")
+        
         del self.requests_states[req_id]
 
     def _process_message(self, message, ack, nack):
@@ -223,7 +232,8 @@ class Filter:
                 self._process_commit(*args)
 
             ack()
-        except:
+        except Exception as e:
+            logging.error(f"An error occurred {e}")
             nack()
 
     def start(self):
