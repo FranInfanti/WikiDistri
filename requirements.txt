@@ -1,1 +1,4 @@
 pika
+nltk
+pyarrow
+kagglehub
