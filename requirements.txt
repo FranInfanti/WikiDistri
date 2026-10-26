@@ -1,0 +1,4 @@
+pika
+nltk
+pyarrow
+kagglehub
