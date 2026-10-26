@@ -15,6 +15,7 @@ SERVER_PORT = int(os.environ["SERVER_PORT"])
 SERVER_HOST = os.environ["SERVER_HOST"]
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "100"))
 INPUT_FILE = os.environ.get("INPUT_FILE", "input/articles.csv")
+OUTPUT_FILE = os.environ.get("OUTPUT_FILE", "output/result.csv")
 
 def read_records(input_file):
     """Lee el CSV incrementalmente y conserva todas las celdas de cada registro."""
@@ -113,14 +114,21 @@ class Client:
 
     def receive_results(self, output_dir):
         """Pendiente: recibir y guardar los resultados de las cinco consultas."""
+        # Es una idea para probar solamente.
+        while True:
+            opcode, batches, payload = message_protocol.external.recv_message(self.server_socket)
+            if opcode == message_protocol.OPCODE_EOF:
+                break
+
+            for message in message_protocol.batching.unbatch_messages(payload, batches):
+                logging.info(f"{message}")
 
         message_protocol.external.send_message(
             client_socket=self.server_socket, 
             message=b"", 
-            opcode=message_protocol.EOF, 
+            opcode=message_protocol.OPCODE_EOF, 
             batches=0
         )
-        raise NotImplementedError("El Gateway todavía no devuelve resultados")
 
     def disconnect(self):
         """Desbloquea operaciones y cierra el socket; permite llamadas repetidas."""
@@ -149,6 +157,7 @@ def main():
         client = Client()
         client.connect(SERVER_HOST, SERVER_PORT)
         client.send_batches(INPUT_FILE, BATCH_SIZE)
+        client.receive_results(OUTPUT_FILE)
         return 0
     except OSError as exc:
         logging.error("Error de archivo o conexión: %s", exc)
