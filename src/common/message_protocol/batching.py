@@ -1,7 +1,5 @@
 from common import message_protocol
 
-_LENGTH_SIZE = 2
-
 def batch_messages(messages: list[str]):
     """
     Returns a byte stream containing the list of messages, 
@@ -14,11 +12,20 @@ def batch_messages(messages: list[str]):
 
     for message in messages:
         line = message.encode(encoding=message_protocol.ENCODING)
-        length = len(line).to_bytes(2, byteorder=message_protocol.ENDIANNESS)
+        length = len(line).to_bytes(
+            message_protocol.MAX_PREFIX_LENGTH, byteorder=message_protocol.ENDIANNESS
+        )
 
         block.append(length + line)
 
     return b"".join(block)
+
+def batch_payload_size(messages: list[str]) -> int:
+    """Returns the size in bytes of the payload produced by ``batch_messages``."""
+    return sum(
+        len(message.encode(encoding=message_protocol.ENCODING)) + message_protocol.MAX_PREFIX_LENGTH
+        for message in messages
+    )
 
 def unbatch_messages(payload: bytes, batches: int):
     """
@@ -35,10 +42,10 @@ def unbatch_messages(payload: bytes, batches: int):
 
     for _ in range(batches):
         length = int.from_bytes(
-            payload[pointer : pointer + _LENGTH_SIZE], 
+            payload[pointer : pointer + message_protocol.MAX_PREFIX_LENGTH], 
             byteorder=message_protocol.ENDIANNESS
         )
-        pointer += _LENGTH_SIZE
+        pointer += message_protocol.MAX_PREFIX_LENGTH
 
         message = payload[pointer : pointer + length]
         pointer += length
