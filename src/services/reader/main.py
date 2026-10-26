@@ -1,16 +1,13 @@
 import os
 import re
-import logging
-from datetime import datetime
 import signal
+import logging
 import threading
 
-from common import middleware
-from common import message_protocol
-from common.eof import EofBarrier 
-
-from common.hashing.hashing import shard_for
+from datetime import datetime
 from stopwords import STOPWORDS
+from common import middleware, message_protocol, hashing, eof
+
 
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
 
@@ -66,7 +63,7 @@ class WordReader:
             host=MOM_HOST, queue_name=SUM_AMOUNT_QUEUE
         )
 
-        self.barrier = EofBarrier(
+        self.barrier = eof.EofBarrier(
             host=MOM_HOST,
             prefix=WORD_READER_PREFIX,
             instance_id=ID,
@@ -134,7 +131,7 @@ class WordReader:
  
         en_count, fr_count = counts
         for word in set(words):
-            shard_words = words_by_shard.setdefault(shard_for(req_id, word), {})
+            shard_words = words_by_shard.setdefault(hashing.shard_for(req_id, word), {})
             entry = shard_words.setdefault(word, [0, 0])
             entry[0] += en_count
             entry[1] += fr_count

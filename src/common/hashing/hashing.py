@@ -1,4 +1,3 @@
-
 import hashlib
 
 def shard_for(num_shards: int, *key_parts) -> int:

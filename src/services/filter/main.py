@@ -11,8 +11,8 @@ FILTER_AMOUNT = int(os.environ["FILTER_AMOUNT"])
 
 ID = int(os.environ["ID"])
 FILTER_PREFIX = os.environ["FILTER_PREFIX"]
-FILTER_INPUT_QUEUE = os.environ["FILTER_INPUT_QUEUE"]
 GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
+FILTER_INPUT_QUEUE = os.environ["FILTER_INPUT_QUEUE"]
 IMAGE_DOWNLOADER_OUTPUT_QUEUE = os.environ["IMAGE_DOWNLOADER_OUTPUT_QUEUE"] 
 
 def define_exchanges(host, prefix, amount, exclude_id = None):
