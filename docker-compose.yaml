@@ -25,6 +25,7 @@ services:
       HOST: gateway
       PORT: "5000"
       JOBS: 1
+      BATCH_SIZE: "50"
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
       FILTER_OUTPUT_QUEUE: filter_queue
