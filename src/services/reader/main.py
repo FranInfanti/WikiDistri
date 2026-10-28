@@ -130,7 +130,7 @@ class WordReader:
  
         en_count, fr_count = counts
         for word in set(words):
-            shard_words = words_by_shard.setdefault(hashing.shard_for(req_id, word), {})
+            shard_words = words_by_shard.setdefault(hashing.shard_for(SUM_WORDS_COUNT , req_id, word), {})
             entry = shard_words.setdefault(word, [0, 0])
             entry[0] += en_count
             entry[1] += fr_count
@@ -151,6 +151,7 @@ class WordReader:
         with self.send_lock:
             for shard, shard_words in words_by_shard.items():
                 message = [[word, en, fr] for word, (en, fr) in shard_words.items()]
+                logging.info(f"{shard}")
                 self.sum_words_queues[shard].send(
                     message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_DATA,

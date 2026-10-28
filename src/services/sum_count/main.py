@@ -18,7 +18,7 @@ COORDINATOR_ID = int(os.environ.get("COORDINATOR_ID", 0))
 
 GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
 
-CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 100))
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 1000))
 
 class Sum:
     def __init__(self):
@@ -190,3 +190,4 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+    
