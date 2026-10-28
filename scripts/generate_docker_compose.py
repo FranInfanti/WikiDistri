@@ -74,8 +74,8 @@ def build_compose(filters: int, image_downloaders: int, clients: int) -> str:
                 "BATCH_SIZE": "50",
                 "MOM_HOST": "rabbitmq",
                 "GATEWAY_PREFIX": "gateway",
-                "FILTER_OUTPUT_QUEUE": "filter_queue",
-                "WORD_READER_OUTPUT_QUEUE": "word_reader_queue",
+                "FILTER_QUEUE": "filter_queue",
+                "WORD_READER_QUEUE": "word_reader_queue",
             },
             "ports": ["5000:5000"],
             "depends_on": {
@@ -99,8 +99,8 @@ def build_compose(filters: int, image_downloaders: int, clients: int) -> str:
                 "GATEWAY_PREFIX": "gateway",
                 "FILTER_AMOUNT": str(filters),
                 "FILTER_PREFIX": "filter",
-                "FILTER_INPUT_QUEUE": "filter_queue",
-                "IMAGE_DOWNLOADER_OUTPUT_QUEUE": "image_downloader_queue",
+                "FILTER_QUEUE": "filter_queue",
+                "IMAGE_DOWNLOADER_QUEUE": "image_downloader_queue",
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
@@ -122,7 +122,7 @@ def build_compose(filters: int, image_downloaders: int, clients: int) -> str:
                 "GATEWAY_PREFIX": "gateway",
                 "IMAGE_DOWNLOADER_AMOUNT": str(image_downloaders),
                 "IMAGE_DOWNLOADER_PREFIX": "image_downloader",
-                "IMAGE_DOWNLOADER_INPUT_QUEUE": "image_downloader_queue",
+                "IMAGE_DOWNLOADER_QUEUE": "image_downloader_queue",
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
