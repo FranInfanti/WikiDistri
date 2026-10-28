@@ -151,7 +151,6 @@ class WordReader:
         with self.send_lock:
             for shard, shard_words in words_by_shard.items():
                 message = [[word, en, fr] for word, (en, fr) in shard_words.items()]
-                logging.info(f"{shard}")
                 self.sum_words_queues[shard].send(
                     message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_DATA,
