@@ -146,7 +146,7 @@ def build_compose(filters: int, image_downloaders: int, clients: int) -> str:
             },
             "volumes": [
                 "./input:/app/input:ro",
-                "./output:/app/output:ro",
+                "./output:/app/output",
             ],
             "depends_on": {
                 "gateway": {"condition": "service_started"},

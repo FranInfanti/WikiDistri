@@ -98,7 +98,7 @@ services:
       BATCH_SIZE: '100'
     volumes:
     - ./input:/app/input:ro
-    - ./output:/app/output:ro
+    - ./output:/app/output
     depends_on:
       gateway:
         condition: service_started
