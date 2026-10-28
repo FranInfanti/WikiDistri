@@ -1,4 +1,6 @@
+import io
 import os
+import csv
 import time
 import signal
 import socket
@@ -30,11 +32,13 @@ def job_format(job_id: int, messages: list):
                 f"{job_id},{url},{date_modified}"
             )
         elif job_id == 2:
-            # [..., [ [name_0, url_0, image_0], ..., [name_n, url_n, image_n] ]]
-            name, url, image_bytes = message
-            batch.append(
-                f"{job_id},{name},{url},{image_bytes}"
+            # [..., [name, article_url, image_url, image_content_type, image_bytes]]
+            name, url, image_url, image_content_type, b64_image_bytes = message
+            row = io.StringIO(newline="")
+            csv.writer(row, lineterminator="\n").writerow(
+                [job_id, name, url, image_url or "", image_content_type or "", b64_image_bytes or ""]
             )
+            batch.append(row.getvalue()[:-1])
         elif job_id == 3:
             # [..., [ word_0, ..., word_n ]]
             word = message

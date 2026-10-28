@@ -78,6 +78,7 @@ class ImageDownloader():
         for message in messages:
             name, url, image = message
             image_bytes = None
+            image_content_type = None
 
             if image:
                 try:
@@ -87,6 +88,7 @@ class ImageDownloader():
                     response = requests.get(url=image, headers=headers, timeout=(5, 30))
                     response.raise_for_status()
                     image_bytes = base64.b64encode(response.content).decode(message_protocol.ENCODING)
+                    image_content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip()
                     logging.info(f"[{req_id}] - Image downloaded")
                 except requests.HTTPError as e:
                     logging.warning(
@@ -101,7 +103,7 @@ class ImageDownloader():
                     opcode=message_protocol.OPCODE_DATA,
                     req_id=req_id,
                     batches=1,
-                    message=[[name, url, image_bytes]]
+                    message=[[name, url, image, image_content_type, image_bytes]]
                 )
             )
 

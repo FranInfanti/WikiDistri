@@ -1,12 +1,17 @@
 import io
 import os
 import csv
+import base64
+import hashlib
+import mimetypes
+import re
 import signal
 import socket
 import logging
 import threading
 
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 from common import message_protocol
 
@@ -15,8 +20,35 @@ SERVER_HOST = os.environ["SERVER_HOST"]
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "100"))
 INPUT_FILE = os.environ.get("INPUT_FILE", "input/articles.csv")
 OUTPUT_FILE = os.environ.get("OUTPUT_FILE", "output/result.csv")
-INPUT_DIR = Path(os.environ.get("INPUT_DIR", str(Path(INPUT_FILE).parent)))
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", str(Path(OUTPUT_FILE).parent)))
+
+
+def save_image(image_dir: Path, article_url: str, image_url: str, content_type: str, encoded_image: str) -> str:
+    image_bytes = base64.b64decode(encoded_image, validate=True)
+    image_name = unquote(urlsplit(article_url).path.rsplit("/", 1)[-1])
+    image_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", image_name)
+
+    if not image_name or image_name in {".", ".."}:
+        image_name = "image"
+
+    image_path = Path(image_name)
+    suffix = Path(unquote(urlsplit(image_url).path)).suffix
+    if not suffix and content_type:
+        suffix = mimetypes.guess_extension(content_type, strict=False) or ""
+        if content_type.lower() == "image/svg+xml":
+            suffix = ".svg"
+        elif content_type.lower() == "image/jpeg":
+            suffix = ".jpg"
+    if not suffix:
+        suffix = ".bin"
+
+    unique_name = (
+        f"{image_path.stem}-{hashlib.sha256(article_url.encode('utf-8')).hexdigest()[:12]}{suffix}"
+    )
+    image_dir.mkdir(parents=True, exist_ok=True)
+    (image_dir / unique_name).write_bytes(image_bytes)
+    return (Path("images") / unique_name).as_posix()
+
 
 def read_records(input_file):
     """Lee el CSV incrementalmente y conserva todas las celdas de cada registro."""
@@ -87,25 +119,19 @@ class Client:
         self.stop.set()
         self.disconnect()
 
-    def send_batches(self, input_dir, batch_size):
-        """Envía los CSV por batches y un único EOF; sólo este thread escribe."""
+    def send_batches(self, input_file, batch_size):
+        """Envía el CSV configurado por batches y un único EOF."""
         try:
-            files = sorted(Path(input_dir).glob("*.csv"))
+            for batch in read_batches(input_file, batch_size):
+                if self.stop.is_set():
+                    return
 
-            if not files:
-                raise FileNotFoundError(f"No CSV files found in {input_dir}")
-
-            for file in files:
-                for batch in read_batches(file, batch_size):
-                    if self.stop.is_set():
-                        return
-
-                    message_protocol.external.send_message(
-                        self.server_socket,
-                        message_protocol.batching.batch_messages(batch),
-                        message_protocol.OPCODE_DATA,
-                        len(batch),
-                    )
+                message_protocol.external.send_message(
+                    self.server_socket,
+                    message_protocol.batching.batch_messages(batch),
+                    message_protocol.OPCODE_DATA,
+                    len(batch),
+                )
 
             if not self.stop.is_set():
                 message_protocol.external.send_message(
@@ -128,6 +154,7 @@ class Client:
                 files[job_id] = (output_dir / f"query_{job_id}.csv.partial").open(
                     "w", encoding="utf-8", newline=""
                 )
+            image_results = csv.writer(files[2], lineterminator="\n")
 
             while not self.stop.is_set():
                 opcode, batches, payload = message_protocol.external.recv_message(self.server_socket)
@@ -150,7 +177,25 @@ class Client:
                             f"Invalid query identifier in result: {message[:80]}"
                         )
 
-                    files[int(job)].write(row.rstrip("\r\n") + "\n")
+                    if job == "2":
+                        fields = next(csv.reader([message]))
+                        if len(fields) != 6:
+                            raise ValueError("Invalid image result format")
+
+                        _, name, url, image_url, content_type, encoded_image = fields
+                        image_path = (
+                            save_image(
+                                output_dir / "images",
+                                url,
+                                image_url,
+                                content_type,
+                                encoded_image,
+                            )
+                            if encoded_image else ""
+                        )
+                        image_results.writerow([name, url, image_path])
+                    else:
+                        files[int(job)].write(row.rstrip("\r\n") + "\n")
 
         except Exception as exc:
             if not self.stop.is_set():
@@ -223,7 +268,7 @@ def main():
     )
 
     try:
-        return Client().run(INPUT_DIR, OUTPUT_DIR, BATCH_SIZE)
+        return Client().run(INPUT_FILE, OUTPUT_DIR, BATCH_SIZE)
 
     except Exception as exc:
         logging.error("Failed to run client: %s", exc)
