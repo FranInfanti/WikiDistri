@@ -2,7 +2,6 @@ import os
 import signal
 import logging
 import threading
-import request_state
 
 from common import entity, message_protocol, middleware
 
@@ -89,6 +88,8 @@ class Filter:
     def _process_data(self, req_id: int, _: int, messages: list[list]):
         logging.info(f"Receive data with req_id: {req_id}")
 
+        req_state = self.requests_states.setdefault(req_id, entity.request_state.RequestState())
+
         for message in messages:
             name, url, date_modified, image, in_language, sections = message
             wikipedia_article = entity.WikipediaArticle(
@@ -128,12 +129,14 @@ class Filter:
                     )
                 )
 
-            self.requests_states.setdefault(req_id, request_state.RequestState()).record_article()
+                req_state.record_article_sent()
+
+            req_state.record_article()
 
     def _process_eof(self, req_id: int, _: int, articles_sent: int):
         logging.info(f"Receive eof with req_id: {req_id}")
         
-        req_state = self.requests_states.setdefault(req_id, request_state.RequestState())
+        req_state = self.requests_states.setdefault(req_id, entity.request_state.RequestState())
         req_state.record_eof(articles_sent)
 
         if FILTER_AMOUNT == 1:
@@ -143,6 +146,15 @@ class Filter:
                     message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
                         req_id=req_id
+                    )
+                )
+
+                self.image_downloader_ouput_queue.send(
+                    message_protocol.internal.serialize(
+                        opcode=message_protocol.OPCODE_EOF,
+                        req_id=req_id,
+                        batches=1,
+                        message=req_state.articles_sent
                     )
                 )
             else:
@@ -165,7 +177,7 @@ class Filter:
         )
 
     def _process_prepare(self, req_id: int, _: int, filter_id: int):
-        req_state = self.requests_states.setdefault(req_id, request_state.RequestState())
+        req_state = self.requests_states.setdefault(req_id, entity.request_state.RequestState())
 
         logging.info(f"Articles received: {req_state.articles_recv}")
 
@@ -179,7 +191,7 @@ class Filter:
         )
 
     def _process_ok(self, req_id: int, _: int, articles_recv: int):
-        req_state = self.requests_states.setdefault(req_id, request_state.RequestState())
+        req_state = self.requests_states.setdefault(req_id, entity.request_state.RequestState())
         req_state.record_peer_count(articles_recv)
 
         if req_state.all_peers(FILTER_AMOUNT):
@@ -197,6 +209,15 @@ class Filter:
                     message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
                         req_id=req_id
+                    )
+                )
+
+                self.image_downloader_ouput_queue.send(
+                    message_protocol.internal.serialize(
+                        opcode=message_protocol.OPCODE_EOF,
+                        req_id=req_id,
+                        batches=1,
+                        message=req_state.articles_sent
                     )
                 )
 
