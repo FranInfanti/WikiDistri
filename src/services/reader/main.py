@@ -85,8 +85,7 @@ class WordReader:
 
     def process_message(self, message, ack, nack):
         try:
-            logging.info(f"req_id= {message}")        
-            opcode, req_id, _batches, payload = message_protocol.internal.deserialize(message) # Despues a ver si funcionaria con batches
+            opcode, req_id, _batches, payload = message_protocol.internal.deserialize(message)
  
             if opcode == message_protocol.OPCODE_DATA:
                 self._handle_articles(req_id, payload)
