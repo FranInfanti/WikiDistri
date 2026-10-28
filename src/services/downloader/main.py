@@ -5,7 +5,7 @@ import logging
 import requests
 import threading
 
-from common import middleware, message_protocol, entity
+from common import middleware, message_protocol, entity, rabbitmq
 
 MOM_HOST = os.environ["MOM_HOST"]
 
@@ -13,7 +13,7 @@ ID = int(os.environ["ID"])
 GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
 IMAGE_DOWNLOADER_AMOUNT = int(os.environ["IMAGE_DOWNLOADER_AMOUNT"])
 IMAGE_DOWNLOADER_PREFIX = os.environ["IMAGE_DOWNLOADER_PREFIX"]
-IMAGE_DOWNLOADER_INPUT_QUEUE = os.environ["IMAGE_DOWNLOADER_INPUT_QUEUE"]
+IMAGE_DOWNLOADER_QUEUE = os.environ["IMAGE_DOWNLOADER_QUEUE"]
 
 def define_exchanges(host, prefix, amount, exclude_id = None):
     exchanges = {}
@@ -39,12 +39,7 @@ class ImageDownloader():
 
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST,
-            queue_name=IMAGE_DOWNLOADER_INPUT_QUEUE
-        )
-
-        self.output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
-            host=MOM_HOST,
-            queue_name=f"{GATEWAY_PREFIX}_2"
+            queue_name=IMAGE_DOWNLOADER_QUEUE
         )
 
         self.input_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
@@ -53,11 +48,14 @@ class ImageDownloader():
             routing_keys=[f"{IMAGE_DOWNLOADER_PREFIX}_{ID}"]
         )
 
-        self.output_exchanges = define_exchanges(
+        self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
-            prefix=IMAGE_DOWNLOADER_PREFIX,
-            amount=IMAGE_DOWNLOADER_AMOUNT,
-            exclude_id=ID
+            queues=[f"{GATEWAY_PREFIX}_2"],
+            exchanges={
+                i: IMAGE_DOWNLOADER_PREFIX
+                for i in range(IMAGE_DOWNLOADER_AMOUNT)
+                if i != ID
+            }
         )
 
     def _sigterm_handler(self, _signum, _frame):
@@ -67,19 +65,12 @@ class ImageDownloader():
         try:
             self.input_queue.stop_consuming()
         except Exception:
-            pass
+            logging.warning("Failed to stop the input queue consumer during shutdown", exc_info=True)
 
         try:
             self.input_exchange.stop_consuming_threadsafe()
         except Exception:
-            pass
-
-    def _publish_message(self, message: bytes, exchange_id: int = None):
-        exchanges = [self.output_exchanges[exchange_id]] \
-            if exchange_id is not None else self.output_exchanges.values()
-
-        for exchange in exchanges:
-            exchange.send(message)
+            logging.warning("Failed to stop the input exchange consumer during shutdown", exc_info=True)
 
     def _download_image(self, req_id: int, batches: int, messages: list):
         logging.info(f"[{req_id}] - Downloading {batches} images")
@@ -93,9 +84,10 @@ class ImageDownloader():
                     headers = {
                         "User-Agent": "Mozilla/5.0"
                     }
-                    response = requests.get(url=image, headers=headers)
+                    response = requests.get(url=image, headers=headers, timeout=(5, 30))
                     response.raise_for_status()
                     image_bytes = base64.b64encode(response.content).decode(message_protocol.ENCODING)
+                    logging.info(f"[{req_id}] - Image downloaded")
                 except requests.HTTPError as e:
                     logging.warning(
                         f"HTTP Error: {e.response.status_code}; reason: {e.response.reason}"
@@ -103,7 +95,8 @@ class ImageDownloader():
                 except requests.RequestException as e:
                     logging.warning(f"Request failed for {image}: {e}")
 
-            self.output_queue.send(
+            self.publisher.publish_queue(
+                queue=f"{GATEWAY_PREFIX}_2",
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
                     req_id=req_id,
@@ -121,7 +114,9 @@ class ImageDownloader():
         if IMAGE_DOWNLOADER_AMOUNT == 1:
             if request_state.all_articles_recv():
                 logging.info(f"[{req_id}] - All articles have been processed")
-                self.output_queue.send(
+
+                self.publisher.publish_queue(
+                    queue=f"{GATEWAY_PREFIX}_2",
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
                         req_id=req_id
@@ -136,8 +131,8 @@ class ImageDownloader():
 
             del self.requests_states[req_id]
             return
-        
-        self._publish_message(
+
+        self.publisher.publish_exchange(
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_PREPARE,
                 req_id=req_id,
@@ -146,21 +141,22 @@ class ImageDownloader():
             )
         )
 
-    def _send_articles_recv(self, req_id: int, _: int, id: int):
+    def _process_prepare(self, req_id: int, _: int, exchange_id: int):
         request_state = self.requests_states.setdefault(req_id, entity.request_state.RequestState())
         
         logging.info(f"[{req_id}] - Articles received: {request_state.articles_recv}")
-        self._publish_message(
+
+        self.publisher.publish_exchange(
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_OK,
                 req_id=req_id,
                 batches=1,
                 message=request_state.articles_recv
             ),
-            exchange_id=id
+            exchange_id=exchange_id
         )
 
-    def _check_articles_recv(self, req_id: int, _: int, articles_recv: int):
+    def _process_ok(self, req_id: int, _: int, articles_recv: int):
         request_state = self.requests_states.setdefault(req_id, entity.request_state.RequestState())
         request_state.record_peer_count(articles_recv)
 
@@ -168,15 +164,16 @@ class ImageDownloader():
             if request_state.all_articles_recv():
                 logging.info(f"[{req_id}] - All articles were processed")
 
-                self._publish_message(
-                    message_protocol.internal.serialize(
+                self.publisher.publish_exchange(
+                    message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_COMMIT,
                         req_id=req_id
                     )
                 )
 
-                self.output_queue.send(
-                    message_protocol.internal.serialize(
+                self.publisher.publish_queue(
+                    queue=f"{GATEWAY_PREFIX}_2",
+                    message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
                         req_id=req_id
                     )
@@ -187,8 +184,8 @@ class ImageDownloader():
                 logging.info(f"[{req_id}] - There are still items that were not processed.")
                 
                 request_state.reset_peers_count()
-                self._publish_message(
-                    message_protocol.internal.serialize(
+                self.publisher.publish_exchange(
+                    message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_PREPARE,
                         req_id=req_id,
                         message=ID
@@ -208,9 +205,9 @@ class ImageDownloader():
             elif opcode == message_protocol.OPCODE_EOF:
                 self._process_eof(*args)
             elif opcode == message_protocol.OPCODE_PREPARE:
-                self._send_articles_recv(*args)
+                self._process_prepare(*args)
             elif opcode == message_protocol.OPCODE_OK:
-                self._check_articles_recv(*args)
+                self._process_ok(*args)
             elif opcode == message_protocol.OPCODE_COMMIT:
                 self._delete_client(*args)
             else:
@@ -229,7 +226,7 @@ class ImageDownloader():
             )
             self.exchange_consumer.start()
 
-            logging.info(f"Start consuming from the input queue: {IMAGE_DOWNLOADER_INPUT_QUEUE}")
+            logging.info(f"Start consuming from the input queue: {IMAGE_DOWNLOADER_QUEUE}")
             self.input_queue.start_consuming(self._recv_message)
         except Exception:
             if self.is_running:
@@ -238,13 +235,11 @@ class ImageDownloader():
             logging.warning("Interrupted by the SIGTERM")
         finally:
             logging.info("Releasing the resources")
-
+            if self.exchange_consumer is not None:
+                self.exchange_consumer.join()
+            self.publisher.stop()
             self.input_queue.close()
-            self.output_queue.close()
             self.input_exchange.close()
-
-            for output_exchange in self.output_exchanges.values():
-                output_exchange.close()
 
 def main():
     logging.basicConfig(

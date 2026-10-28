@@ -1,6 +1,7 @@
 import io
 import os
 import csv
+import threading
 import time
 import signal
 import socket
@@ -156,8 +157,24 @@ def main():
             raise ValueError("BATCH_SIZE debe ser mayor que cero")
         client = Client()
         client.connect(SERVER_HOST, SERVER_PORT)
-        client.send_batches(INPUT_FILE, BATCH_SIZE)
-        client.receive_results(OUTPUT_FILE)
+
+        upload = threading.Thread(
+            target=client.send_batches,
+            args=(INPUT_FILE, BATCH_SIZE,)
+        )
+
+        upload.start()
+
+        download = threading.Thread(
+            target=client.receive_results,
+            args=(OUTPUT_FILE,)
+        )
+
+        download.start()
+
+        upload.join()
+        download.join()
+
         return 0
     except OSError as exc:
         logging.error("Error de archivo o conexión: %s", exc)

@@ -3,7 +3,7 @@ import signal
 import logging
 import threading
 
-from common import entity, message_protocol, middleware
+from common import entity, message_protocol, middleware, rabbitmq
 
 MOM_HOST = os.environ["MOM_HOST"]
 FILTER_AMOUNT = int(os.environ["FILTER_AMOUNT"])
@@ -11,8 +11,8 @@ FILTER_AMOUNT = int(os.environ["FILTER_AMOUNT"])
 ID = int(os.environ["ID"])
 FILTER_PREFIX = os.environ["FILTER_PREFIX"]
 GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
-FILTER_INPUT_QUEUE = os.environ["FILTER_INPUT_QUEUE"]
-IMAGE_DOWNLOADER_OUTPUT_QUEUE = os.environ["IMAGE_DOWNLOADER_OUTPUT_QUEUE"] 
+FILTER_QUEUE = os.environ["FILTER_QUEUE"]
+IMAGE_DOWNLOADER_QUEUE = os.environ["IMAGE_DOWNLOADER_QUEUE"] 
 
 def define_exchanges(host, prefix, amount, exclude_id = None):
     exchanges = {}
@@ -32,32 +32,25 @@ class Filter:
     def __init__(self):
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
+        self.publisher = rabbitmq.RabbitPublisher(
+            host=MOM_HOST,
+            queues=[FILTER_QUEUE, IMAGE_DOWNLOADER_QUEUE, f"{GATEWAY_PREFIX}_1"],
+            exchanges={
+                i: FILTER_PREFIX
+                for i in range(FILTER_AMOUNT)
+                if i != ID
+            }
+        )
+
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST,
-            queue_name=FILTER_INPUT_QUEUE
-        )
-
-        self.gateway_output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
-            host=MOM_HOST,
-            queue_name=f"{GATEWAY_PREFIX}_1"
-        )
-
-        self.image_downloader_ouput_queue = middleware.MessageMiddlewareQueueRabbitMQ(
-            host=MOM_HOST,
-            queue_name=IMAGE_DOWNLOADER_OUTPUT_QUEUE
+            queue_name=FILTER_QUEUE
         )
 
         self.input_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
             host=MOM_HOST,
             exchange_name=FILTER_PREFIX,
             routing_keys=[f"{FILTER_PREFIX}_{ID}"]
-        )
-
-        self.output_exchanges = define_exchanges(
-            host=MOM_HOST,
-            prefix=FILTER_PREFIX,
-            amount=FILTER_AMOUNT,
-            exclude_id=ID
         )
 
         self.is_running = True
@@ -77,13 +70,6 @@ class Filter:
             self.input_exchange.stop_consuming_threadsafe()
         except Exception:
             pass
-
-    def _publish_message(self, message: bytes, filter_id: int = None):
-        exchanges = [self.output_exchanges[filter_id]] \
-            if filter_id is not None else self.output_exchanges.values()
-
-        for exchange in exchanges:
-            exchange.send(message)
 
     def _process_data(self, req_id: int, _: int, messages: list[list]):
         logging.info(f"Receive data with req_id: {req_id}")
@@ -105,23 +91,25 @@ class Filter:
                 logging.info(f"Sending result with req_id: {req_id}")
 
                 filter_message = wikipedia_article.to_list(url=True, date_modified=True)
-                self.gateway_output_queue.send(
-                    message_protocol.internal.serialize(
+                self.publisher.publish_queue(
+                    queue=f"{GATEWAY_PREFIX}_1",
+                    message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_DATA,
                         req_id=req_id,
                         batches=1,
                         message=[filter_message]
                     )
                 )
-
+                
             if wikipedia_article < 2020 and (
                 wikipedia_article.section_contains("biography") or wikipedia_article.section_contains("biographie")
             ):
                 logging.info(f"Sending to download image with req_id: {req_id}")
 
                 image_downloader_message = wikipedia_article.to_list(name=True, url=True, image=True)
-                self.image_downloader_ouput_queue.send(
-                    message_protocol.internal.serialize(
+                self.publisher.publish_queue(
+                    queue=IMAGE_DOWNLOADER_QUEUE,
+                    message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_DATA,
                         req_id=req_id,
                         batches=1,
@@ -142,15 +130,17 @@ class Filter:
         if FILTER_AMOUNT == 1:
             if req_state.all_articles_recv():
                 logging.info("All articles have been filtered")
-                self.gateway_output_queue.send(
-                    message_protocol.internal.serialize(
+                self.publisher.publish_queue(
+                    queue=f"{GATEWAY_PREFIX}_1",
+                    message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
                         req_id=req_id
                     )
                 )
 
-                self.image_downloader_ouput_queue.send(
-                    message_protocol.internal.serialize(
+                self.publisher.publish_queue(
+                    queue=IMAGE_DOWNLOADER_QUEUE,
+                    message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
                         req_id=req_id,
                         batches=1,
@@ -168,7 +158,7 @@ class Filter:
             del self.requests_states[req_id]
             return
 
-        self._publish_message(
+        self.publisher.publish_exchange(
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_PREPARE,
                 req_id=req_id,
@@ -176,18 +166,18 @@ class Filter:
             )
         )
 
-    def _process_prepare(self, req_id: int, _: int, filter_id: int):
+    def _filter_messages(self, req_id: int, _: int, exchange_id: int):
         req_state = self.requests_states.setdefault(req_id, entity.request_state.RequestState())
 
         logging.info(f"Articles received: {req_state.articles_recv}")
 
-        self._publish_message(
+        self.publisher.publish_exchange(
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_OK,
                 req_id=req_id,
                 message=req_state.articles_recv,
             ),
-            filter_id=filter_id
+            exchange_id=exchange_id
         )
 
     def _process_ok(self, req_id: int, _: int, articles_recv: int):
@@ -198,22 +188,24 @@ class Filter:
             if req_state.all_articles_recv():
                 logging.info("All articles have been filtered")
 
-                self._publish_message(
-                    message_protocol.internal.serialize(
+                self.publisher.publish_exchange(
+                    message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_COMMIT,
                         req_id=req_id
                     )
                 )
 
-                self.gateway_output_queue.send(
-                    message_protocol.internal.serialize(
+                self.publisher.publish_queue(
+                    queue=f"{GATEWAY_PREFIX}_1",
+                    message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
                         req_id=req_id
                     )
                 )
 
-                self.image_downloader_ouput_queue.send(
-                    message_protocol.internal.serialize(
+                self.publisher.publish_queue(
+                    queue=IMAGE_DOWNLOADER_QUEUE,
+                    message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
                         req_id=req_id,
                         batches=1,
@@ -225,8 +217,8 @@ class Filter:
             else:
                 logging.info("There are still articles that have not been processed")
                 req_state.reset_peers_count()
-                self._publish_message(
-                    message_protocol.internal.serialize(
+                self.publisher.publish_exchange(
+                    message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_PREPARE,
                         req_id=req_id,
                         message=ID
@@ -247,7 +239,7 @@ class Filter:
             elif opcode == message_protocol.OPCODE_EOF:
                 self._process_eof(*args)
             elif opcode == message_protocol.OPCODE_PREPARE:
-                self._process_prepare(*args)
+                self._filter_messages(*args)
             elif opcode == message_protocol.OPCODE_OK:
                 self._process_ok(*args)
             elif opcode == message_protocol.OPCODE_COMMIT:
@@ -271,13 +263,10 @@ class Filter:
             if self.is_running:
                 raise
         finally:
+            self.publisher.stop()
+
             self.input_queue.close()
             self.input_exchange.close()
-            self.gateway_output_queue.close()
-            self.image_downloader_ouput_queue.close()
-
-            for output_exchange in self.output_exchanges.values():
-                output_exchange.close()
 
 def main():
     logging.basicConfig(
