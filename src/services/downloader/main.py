@@ -241,9 +241,9 @@ class ImageDownloader():
 
             self.input_queue.close()
             self.output_queue.close()
-
             self.input_exchange.close()
-            for output_exchange in self.output_exchange:
+
+            for output_exchange in self.output_exchanges.values():
                 output_exchange.close()
 
 def main():

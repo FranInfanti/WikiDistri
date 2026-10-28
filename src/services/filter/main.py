@@ -53,7 +53,7 @@ class Filter:
             routing_keys=[f"{FILTER_PREFIX}_{ID}"]
         )
 
-        self.output_exchange = define_exchanges(
+        self.output_exchanges = define_exchanges(
             host=MOM_HOST,
             prefix=FILTER_PREFIX,
             amount=FILTER_AMOUNT,
@@ -79,8 +79,8 @@ class Filter:
             pass
 
     def _publish_message(self, message: bytes, filter_id: int = None):
-        exchanges = [self.output_exchange[filter_id]] \
-            if filter_id is not None else self.output_exchange.values()
+        exchanges = [self.output_exchanges[filter_id]] \
+            if filter_id is not None else self.output_exchanges.values()
 
         for exchange in exchanges:
             exchange.send(message)
@@ -276,7 +276,7 @@ class Filter:
             self.gateway_output_queue.close()
             self.image_downloader_ouput_queue.close()
 
-            for output_exchange in self.output_exchange:
+            for output_exchange in self.output_exchanges.values():
                 output_exchange.close()
 
 def main():
