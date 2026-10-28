@@ -13,8 +13,8 @@ services:
       test: rabbitmq-diagnostics check_port_connectivity
       timeout: 3s
     ports:
-      - 5672:5672
-      - 15672:15672
+      - "5672:5672"
+      - "15672:15672"
   gateway:
     build:
       context: ./src/
@@ -24,35 +24,18 @@ services:
       PYTHONUNBUFFERED: "1"
       HOST: gateway
       PORT: "5000"
-      JOBS: 1
+      JOBS: 5
       BATCH_SIZE: "50"
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
       FILTER_OUTPUT_QUEUE: filter_queue
       WORD_READER_OUTPUT_QUEUE: word_reader_queue
     ports:
-      - 5000:5000
+      - "5000:5000"
     depends_on:
       rabbitmq:
         condition: service_healthy
-  filter_0:
-    build:
-      context: ./src/
-      dockerfile: services/filter/Dockerfile
-    container_name: filter_0
-    environment:
-      PYTHONUNBUFFERED: "1"
-      ID: "0"
-      FILTER_AMOUNT: "1"
-      MOM_HOST: rabbitmq
-      FILTER_PREFIX: filter
-      GATEWAY_PREFIX: gateway
-      FILTER_INPUT_QUEUE: filter_queue
-      IMAGE_DOWNLOADER_OUTPUT_QUEUE: image_downloader_queue
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  client:
+  client_0:
     build:
       context: .
       dockerfile: src/services/client/Dockerfile
@@ -69,6 +52,197 @@ services:
     depends_on:
       gateway:
         condition: service_started
+  filter_0:
+    build:
+      context: ./src/
+      dockerfile: services/filter/Dockerfile
+    container_name: filter_0
+    environment:
+      PYTHONUNBUFFERED: "1"
+      ID: "0"
+      FILTER_AMOUNT: "3"
+      MOM_HOST: rabbitmq
+      FILTER_PREFIX: filter
+      GATEWAY_PREFIX: gateway
+      FILTER_INPUT_QUEUE: filter_queue
+      IMAGE_DOWNLOADER_OUTPUT_QUEUE: image_downloader_queue
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  filter_1:
+    build:
+      context: ./src/
+      dockerfile: services/filter/Dockerfile
+    container_name: filter_1
+    environment:
+      PYTHONUNBUFFERED: "1"
+      ID: "1"
+      FILTER_AMOUNT: "3"
+      MOM_HOST: rabbitmq
+      FILTER_PREFIX: filter
+      GATEWAY_PREFIX: gateway
+      FILTER_INPUT_QUEUE: filter_queue
+      IMAGE_DOWNLOADER_OUTPUT_QUEUE: image_downloader_queue
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  filter_2:
+    build:
+      context: ./src/
+      dockerfile: services/filter/Dockerfile
+    container_name: filter_2
+    environment:
+      PYTHONUNBUFFERED: "1"
+      ID: "2"
+      FILTER_AMOUNT: "3"
+      MOM_HOST: rabbitmq
+      FILTER_PREFIX: filter
+      GATEWAY_PREFIX: gateway
+      FILTER_INPUT_QUEUE: filter_queue
+      IMAGE_DOWNLOADER_OUTPUT_QUEUE: image_downloader_queue
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  word_reader_0:
+    build:
+      context: ./src/
+      dockerfile: services/reader/Dockerfile
+    container_name: word_reader_0
+    environment:
+      MOM_HOST: rabbitmq
+      WORD_READER_OUTPUT_QUEUE: word_reader_queue
+      WORD_READER_PREFIX: word_reader
+      WORD_READER_AMOUNT: "4"
+      ID: "0"
+      SUM_WORDS_QUEUE_PREFIX: sum_words_queue
+      SUM_WORDS_COUNT: "4"
+      JOIN_QUEUE: join_queue
+      SUM_AMOUNT_QUEUE: sum_amount_queue
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  word_reader_1:
+    build:
+      context: ./src/
+      dockerfile: services/reader/Dockerfile
+    container_name: word_reader_1
+    environment:
+      MOM_HOST: rabbitmq
+      WORD_READER_OUTPUT_QUEUE: word_reader_queue
+      WORD_READER_PREFIX: word_reader
+      WORD_READER_AMOUNT: "4"
+      ID: "1"
+      SUM_WORDS_QUEUE_PREFIX: sum_words_queue
+      SUM_WORDS_COUNT: "4"
+      JOIN_QUEUE: join_queue
+      SUM_AMOUNT_QUEUE: sum_amount_queue
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  word_reader_2:
+    build:
+      context: ./src/
+      dockerfile: services/reader/Dockerfile
+    container_name: word_reader_2
+    environment:
+      MOM_HOST: rabbitmq
+      WORD_READER_OUTPUT_QUEUE: word_reader_queue
+      WORD_READER_PREFIX: word_reader
+      WORD_READER_AMOUNT: "4"
+      ID: "2"
+      SUM_WORDS_QUEUE_PREFIX: sum_words_queue
+      SUM_WORDS_COUNT: "4"
+      JOIN_QUEUE: join_queue
+      SUM_AMOUNT_QUEUE: sum_amount_queue
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  word_reader_3:
+    build:
+      context: ./src/
+      dockerfile: services/reader/Dockerfile
+    container_name: word_reader_3
+    environment:
+      MOM_HOST: rabbitmq
+      WORD_READER_OUTPUT_QUEUE: word_reader_queue
+      WORD_READER_PREFIX: word_reader
+      WORD_READER_AMOUNT: "4"
+      ID: "3"
+      SUM_WORDS_QUEUE_PREFIX: sum_words_queue
+      SUM_WORDS_COUNT: "4"
+      JOIN_QUEUE: join_queue
+      SUM_AMOUNT_QUEUE: sum_amount_queue
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  sum_0:
+    build:
+      context: ./src/
+      dockerfile: services/sum_count/Dockerfile
+    container_name: sum_0
+    environment:
+      MOM_HOST: rabbitmq
+      SUM_WORDS_QUEUE_PREFIX: sum_words_queue
+      SUM_WORDS_COUNT: "4"
+      SUM_COUNT_PREFIX: sum_count
+      COORDINATOR_ID: "0"
+      GATEWAY_PREFIX: gateway
+      CHUNK_SIZE: "1000"
+      ID: "0"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  sum_1:
+    build:
+      context: ./src/
+      dockerfile: services/sum_count/Dockerfile
+    container_name: sum_1
+    environment:
+      MOM_HOST: rabbitmq
+      SUM_WORDS_QUEUE_PREFIX: sum_words_queue
+      SUM_WORDS_COUNT: "4"
+      SUM_COUNT_PREFIX: sum_count
+      COORDINATOR_ID: "0"
+      GATEWAY_PREFIX: gateway
+      CHUNK_SIZE: "1000"
+      ID: "1"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  sum_2:
+    build:
+      context: ./src/
+      dockerfile: services/sum_count/Dockerfile
+    container_name: sum_2
+    environment:
+      MOM_HOST: rabbitmq
+      SUM_WORDS_QUEUE_PREFIX: sum_words_queue
+      SUM_WORDS_COUNT: "4"
+      SUM_COUNT_PREFIX: sum_count
+      COORDINATOR_ID: "0"
+      GATEWAY_PREFIX: gateway
+      CHUNK_SIZE: "1000"
+      ID: "2"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  sum_3:
+    build:
+      context: ./src/
+      dockerfile: services/sum_count/Dockerfile
+    container_name: sum_3
+    environment:
+      MOM_HOST: rabbitmq
+      SUM_WORDS_QUEUE_PREFIX: sum_words_queue
+      SUM_WORDS_COUNT: "4"
+      SUM_COUNT_PREFIX: sum_count
+      COORDINATOR_ID: "0"
+      GATEWAY_PREFIX: gateway
+      CHUNK_SIZE: "1000"
+      ID: "3"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
   download:
     build:
       context: .
