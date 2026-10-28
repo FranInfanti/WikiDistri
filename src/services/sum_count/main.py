@@ -13,7 +13,7 @@ ID = int(os.environ["ID"])
 SUM_WORDS_QUEUE_PREFIX = os.environ["SUM_WORDS_QUEUE_PREFIX"]
 SUM_WORDS_COUNT = int(os.environ["SUM_WORDS_COUNT"])
 
-SUM_BARRIER_PREFIX = os.environ["SUM_BARRIER_PREFIX"]
+SUM_COUNT_PREFIX = os.environ["SUM_COUNT_PREFIX"]
 COORDINATOR_ID = int(os.environ.get("COORDINATOR_ID", 0))
 
 GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
@@ -36,7 +36,7 @@ class Sum:
 
         self.barrier = EofBarrier(
             host=MOM_HOST,
-            prefix=SUM_BARRIER_PREFIX,
+            prefix=SUM_COUNT_PREFIX,
             instance_id=ID,
             instances=SUM_WORDS_COUNT,
             on_all_received=self._send_final_eof,
