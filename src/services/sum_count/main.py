@@ -1,7 +1,7 @@
 import os
 import signal
 import logging
-import threading
+import heapq
 
 from common import middleware, message_protocol, rabbitmq
 from common.eof.eof_barrier import EofBarrier
@@ -19,6 +19,10 @@ GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
 
 CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 1000))
 
+JOIN_TOP_QUEUE = os.environ["JOIN_TOP_QUEUE"]
+JOIN_TOP_COUNT = int(os.environ["JOIN_TOP_COUNT"])
+TOP_SIZE = int(os.environ.get("TOP_SIZE", 20))
+
 class Sum:
     def __init__(self):
         signal.signal(signal.SIGTERM, self._sigterm_handler)
@@ -31,9 +35,11 @@ class Sum:
         )
 
         self.gateway_queue_name = f"{GATEWAY_PREFIX}_3"
+        self.join_top_queue_names = [f"{JOIN_TOP_QUEUE}_{i}" for i in range(JOIN_TOP_COUNT)]
 
         self.publisher = rabbitmq.RabbitPublisher(
-            host=MOM_HOST, queues=[self.gateway_queue_name]
+            host=MOM_HOST,
+            queues=[self.gateway_queue_name, *self.join_top_queue_names],
         )
 
         self.barrier = EofBarrier(
@@ -89,10 +95,29 @@ class Sum:
         sent = self._send_common_words(req_id, request_words)
         logging.info(f"req_id={req_id}: {sent} common words out of {len(request_words)}")
 
+        self._send_partial_top(req_id, request_words)
+
         self.barrier.record_articles(req_id, 1)
 
         if ID == COORDINATOR_ID:
             self.barrier.on_eof(req_id, SUM_WORDS_COUNT)
+
+    def _send_partial_top(self, req_id: int, request_words: dict):
+        top = heapq.nsmallest(
+            TOP_SIZE,
+            ((-(en + fr), word) for word, (en, fr) in request_words.items()),
+        )
+        entries = [[word, -neg_total] for neg_total, word in top]
+
+        self.publisher.publish_queue(
+            self.join_top_queue_names[req_id % JOIN_TOP_COUNT],
+            message_protocol.internal.serialize(
+                opcode=message_protocol.OPCODE_DATA,
+                req_id=req_id,
+                batches=len(entries),
+                message=[ID, entries],
+            ),
+        )
 
     def _send_common_words(self, req_id: int, request_words: dict) -> int:
         """Streams the words seen in both languages in chunks of CHUNK_SIZE."""
