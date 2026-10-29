@@ -52,23 +52,6 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-  filter_0:
-    build:
-      context: ./src/
-      dockerfile: services/filter/Dockerfile
-    container_name: filter_0
-    environment:
-      PYTHONUNBUFFERED: '1'
-      ID: '0'
-      MOM_HOST: rabbitmq
-      GATEWAY_PREFIX: gateway
-      FILTER_AMOUNT: '1'
-      FILTER_PREFIX: filter
-      FILTER_QUEUE: filter_queue
-      IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
   image_downloader_0:
     build:
       context: ./src/
