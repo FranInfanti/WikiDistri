@@ -3,8 +3,7 @@ import signal
 import logging
 import threading
 
-from common import middleware
-from common import message_protocol
+from common import middleware, message_protocol, rabbitmq
 from common.eof.eof_barrier import EofBarrier
 
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
@@ -27,12 +26,15 @@ class Sum:
         self.is_running = True
         self.words: dict[int, dict[str, list[int]]] = {}
 
-        self.gateway_lock = threading.Lock()
-
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST, queue_name=f"{SUM_WORDS_QUEUE_PREFIX}_{ID}"
         )
-        self.gateway_queue = self._new_gateway_queue()
+
+        self.gateway_queue_name = f"{GATEWAY_PREFIX}_3"
+
+        self.publisher = rabbitmq.RabbitPublisher(
+            host=MOM_HOST, queues=[self.gateway_queue_name]
+        )
 
         self.barrier = EofBarrier(
             host=MOM_HOST,
@@ -53,29 +55,8 @@ class Sum:
 
         self.barrier.stop_consuming()
 
-    def _new_gateway_queue(self):
-        return middleware.MessageMiddlewareQueueRabbitMQ(
-            host=MOM_HOST, 
-            queue_name=f"{GATEWAY_PREFIX}_3"
-        )
-
     def _gateway_send(self, data: bytes):
-        """
-        The Sum publishes nothing while it accumulates, so this connection can
-        sit idle for minutes and the broker may close it (missed heartbeats).
-        If the send fails, reconnect once and retry.
-        """
-        with self.gateway_lock:
-            try:
-                self.gateway_queue.send(data)
-            except Exception:
-                logging.warning("Connection to the gateway queue lost, reconnecting")
-                try:
-                    self.gateway_queue.close()
-                except Exception:
-                    pass
-                self.gateway_queue = self._new_gateway_queue()
-                self.gateway_queue.send(data)
+        self.publisher.publish_queue(self.gateway_queue_name, data)
 
     def process_message(self, message, ack, nack):
         try:
@@ -165,15 +146,13 @@ class Sum:
             self._close()
 
     def _close(self):
-        logging.info("Closing queues...")
         self.barrier.close()
+        self.publisher.stop()
 
-        for queue in (self.input_queue, self.gateway_queue):
-            try:
-                queue.close()
-            except Exception:
-                logging.exception("Error closing queue")
-
+        try:
+            self.input_queue.close()
+        except Exception:
+            logging.exception("Error closing queue")
 
 def main():
     logging.basicConfig(
@@ -186,7 +165,6 @@ def main():
         logging.exception("An unexpected error has occurred")
         return 2
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())
