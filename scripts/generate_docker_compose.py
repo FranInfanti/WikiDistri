@@ -16,12 +16,24 @@ def positive_int(value: str) -> int:
     
     return number
 
-def build_compose(filters: int, image_downloaders: int, clients: int) -> str:
-    for name, count in (
-        ("filters", filters),
-        ("image_downloaders", image_downloaders),
-        ("clients", clients),
-    ):
+def build_compose(
+    filters: int,
+    image_downloaders: int,
+    clients: int,
+    word_readers: int,
+    sum_counts: int,
+    join_tops: int,
+) -> str:
+    counts = {
+        "filters": filters,
+        "image_downloaders": image_downloaders,
+        "clients": clients,
+        "word_readers": word_readers,
+        "sum_counts": sum_counts,
+        "join_tops": join_tops,
+    }
+
+    for name, count in counts.items():
         if count < 1:
             raise ValueError(f"{name} must be greater than zero")
 
@@ -50,7 +62,9 @@ def build_compose(filters: int, image_downloaders: int, clients: int) -> str:
                 "dockerfile": "Dockerfile",
             },
             "container_name": "rabbitmq",
-            "environment": {"RABBITMQ_LOG_LEVELS": "error"},
+            "environment": {
+                "RABBITMQ_LOG_LEVELS": "error",
+            },
             "healthcheck": {
                 "interval": "5s",
                 "retries": 10,
@@ -70,7 +84,7 @@ def build_compose(filters: int, image_downloaders: int, clients: int) -> str:
                 "PYTHONUNBUFFERED": "1",
                 "HOST": "gateway",
                 "PORT": "5000",
-                "JOBS": "2",
+                "JOBS": "4",
                 "BATCH_SIZE": "50",
                 "MOM_HOST": "rabbitmq",
                 "GATEWAY_PREFIX": "gateway",
@@ -81,6 +95,24 @@ def build_compose(filters: int, image_downloaders: int, clients: int) -> str:
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
             },
+        },
+        "download": {
+            "build": {
+                "context": ".",
+                "dockerfile": "src/services/client/Dockerfile",
+            },
+            "container_name": "download",
+            "profiles": ["data-setup"],
+            "entrypoint": ["python", "scripts/download_dataset.py"],
+            "environment": {
+                "FILES_PER_LANGUAGE": "${FILES_PER_LANGUAGE:-5}",
+                "WIKI_LANGUAGES": "${WIKI_LANGUAGES:-en,fr}",
+                "MAX_ROWS": "${MAX_ROWS:-0}",
+            },
+            "volumes": [
+                "./input:/app/input",
+                "kaggle-cache:/cache/kagglehub",
+            ],
         },
     }
 
@@ -153,26 +185,149 @@ def build_compose(filters: int, image_downloaders: int, clients: int) -> str:
             },
         }
 
-    compose = {"services": services, "volumes": {"kaggle-cache": None}}
+    for reader_id in range(word_readers):
+        service_name = f"word_reader_{reader_id}"
 
-    return yaml.safe_dump(compose, sort_keys=False, default_flow_style=False)
+        services[service_name] = {
+            "build": {
+                "context": "./src/",
+                "dockerfile": "services/reader/Dockerfile",
+            },
+            "container_name": service_name,
+            "environment": {
+                "MOM_HOST": "rabbitmq",
+                "WORD_READER_OUTPUT_QUEUE": "word_reader_queue",
+                "WORD_READER_PREFIX": "word_reader",
+                "WORD_READER_AMOUNT": str(word_readers),
+                "ID": str(reader_id),
+                "SUM_WORDS_QUEUE_PREFIX": "sum_words_queue",
+                "SUM_WORDS_COUNT": str(sum_counts),
+                "JOIN_QUEUE": "join_queue",
+                "SUM_AMOUNT_QUEUE": "sum_amount_queue",
+            },
+            "depends_on": {
+                "rabbitmq": {"condition": "service_healthy"},
+            },
+        }
+
+    for sum_id in range(sum_counts):
+        service_name = f"sum_{sum_id}"
+
+        services[service_name] = {
+            "build": {
+                "context": "./src/",
+                "dockerfile": "services/sum_count/Dockerfile",
+            },
+            "container_name": service_name,
+            "environment": {
+                "MOM_HOST": "rabbitmq",
+                "SUM_WORDS_QUEUE_PREFIX": "sum_words_queue",
+                "SUM_WORDS_COUNT": str(sum_counts),
+                "SUM_COUNT_PREFIX": "sum_count",
+                "COORDINATOR_ID": "0",
+                "GATEWAY_PREFIX": "gateway",
+                "CHUNK_SIZE": "1000",
+                "JOIN_TOP_QUEUE": "join_top",
+                "JOIN_TOP_COUNT": "1",
+                "ID": str(sum_id),
+            },
+            "depends_on": {
+                "rabbitmq": {"condition": "service_healthy"},
+            },
+        }
+
+    for join_top_id in range(join_tops):
+        service_name = f"join_top_{join_top_id}"
+
+        services[service_name] = {
+            "build": {
+                "context": "./src/",
+                "dockerfile": "services/join_top/Dockerfile",
+            },
+            "container_name": service_name,
+            "environment": {
+                "MOM_HOST": "rabbitmq",
+                "JOIN_TOP_QUEUE": "join_top",
+                "SUM_WORDS_COUNT": str(sum_counts),
+                "GATEWAY_PREFIX": "gateway",
+                "ID": str(join_top_id),
+            },
+            "depends_on": {
+                "rabbitmq": {"condition": "service_healthy"},
+            },
+        }
+
+    compose = {
+        "services": services,
+        "volumes": {
+            "kaggle-cache": None,
+        },
+    }
+
+    return yaml.safe_dump(
+        compose,
+        sort_keys=False,
+        default_flow_style=False,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Generate a docker-compose.yml file")
-    parser.add_argument("--filters", type=positive_int, default=1, metavar="N")
-    parser.add_argument("--image-downloaders", type=positive_int, default=1, metavar="N")
+    parser = argparse.ArgumentParser(
+        description="Generate a docker-compose.yml file"
+    )
+
+    parser.add_argument("--filters", type=positive_int, default=3, metavar="N")
+    parser.add_argument(
+        "--image-downloaders",
+        type=positive_int,
+        default=1,
+        metavar="N",
+    )
     parser.add_argument("--clients", type=positive_int, default=1, metavar="N")
-    parser.add_argument("--output", type=Path, default=ROOT_DIR / "docker-compose.yml", help="output file directory")
-    
+    parser.add_argument(
+        "--word-readers",
+        type=positive_int,
+        default=4,
+        metavar="N",
+    )
+    parser.add_argument(
+        "--sum-counts",
+        type=positive_int,
+        default=4,
+        metavar="N",
+    )
+    parser.add_argument("--jobs", type=positive_int, default=4, metavar="N")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=ROOT_DIR / "docker-compose.yml",
+        help="Output file path",
+    )
+
+    parser.add_argument(
+        "--join-tops",
+        type=positive_int,
+        default=1,
+        metavar="N",
+    )
+
     args = parser.parse_args(argv)
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
-        build_compose(args.filters, args.image_downloaders, args.clients),
+        build_compose(
+            filters=args.filters,
+            image_downloaders=args.image_downloaders,
+            clients=args.clients,
+            word_readers=args.word_readers,
+            sum_counts=args.sum_counts,
+            join_tops=args.join_tops,
+        ),
         encoding="utf-8",
     )
 
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
