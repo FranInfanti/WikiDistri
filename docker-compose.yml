@@ -1,4 +1,21 @@
 services:
+  dataset-downloader:
+    build:
+      context: .
+      dockerfile: ./src/services/client/Dockerfile
+    profiles:
+    - data-setup
+    container_name: dataset-downloader
+    entrypoint:
+    - python
+    - scripts/download_dataset.py
+    environment:
+      FILES_PER_LANGUAGE: ${FILES_PER_LANGUAGE:-5}
+      WIKI_LANGUAGES: ${WIKI_LANGUAGES:-en,fr}
+      MAX_ROWS: ${MAX_ROWS:-0}
+    volumes:
+    - ./input:/app/input
+    - kaggle-cache:/cache/kagglehub
   rabbitmq:
     build:
       context: ./src/services/rabbitmq
@@ -21,17 +38,50 @@ services:
       dockerfile: services/gateway/Dockerfile
     container_name: gateway
     environment:
-      PYTHONUNBUFFERED: "1"
+      PYTHONUNBUFFERED: '1'
       HOST: gateway
       PORT: "5000"
       JOBS: 5
       BATCH_SIZE: "50"
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
-      FILTER_OUTPUT_QUEUE: filter_queue
-      WORD_READER_OUTPUT_QUEUE: word_reader_queue
+      FILTER_QUEUE: filter_queue
+      WORD_READER_QUEUE: word_reader_queue
     ports:
-      - "5000:5000"
+    - 5000:5000
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  filter_0:
+    build:
+      context: ./src/
+      dockerfile: services/filter/Dockerfile
+    container_name: filter_0
+    environment:
+      PYTHONUNBUFFERED: '1'
+      ID: '0'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      FILTER_AMOUNT: '1'
+      FILTER_PREFIX: filter
+      FILTER_QUEUE: filter_queue
+      IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  image_downloader_0:
+    build:
+      context: ./src/
+      dockerfile: services/downloader/Dockerfile
+    container_name: image_downloader_0
+    environment:
+      PYTHONUNBUFFERED: '1'
+      ID: '0'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      IMAGE_DOWNLOADER_AMOUNT: '1'
+      IMAGE_DOWNLOADER_PREFIX: image_downloader
+      IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -41,14 +91,14 @@ services:
       dockerfile: src/services/client/Dockerfile
     container_name: client_0
     environment:
-      PYTHONUNBUFFERED: "1"
+      PYTHONUNBUFFERED: '1'
       INPUT_FILE: /app/input/articles.csv
       SERVER_HOST: gateway
-      SERVER_PORT: "5000"
-      BATCH_SIZE: "100"
+      SERVER_PORT: '5000'
+      BATCH_SIZE: '100'
     volumes:
-      - ./input:/app/input:ro
-      - ./output:/app/output:ro
+    - ./input:/app/input:ro
+    - ./output:/app/output
     depends_on:
       gateway:
         condition: service_started
@@ -258,4 +308,4 @@ services:
       - ./input:/app/input
       - kaggle-cache:/cache/kagglehub
 volumes:
-  kaggle-cache:
+  kaggle-cache: null

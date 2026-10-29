@@ -1,4 +1,5 @@
 pika
 nltk
+PyYAML
 pyarrow
 kagglehub

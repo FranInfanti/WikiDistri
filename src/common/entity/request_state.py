@@ -4,10 +4,14 @@ from dataclasses import dataclass, field
 class RequestState:
     expected_articles: int | None = None
     articles_recv: int = 0
+    articles_sent: int = 0
     peer_counts: list[int] = field(default_factory=list)
 
     def record_article(self):
         self.articles_recv += 1
+
+    def record_article_sent(self):
+        self.articles_sent += 1
 
     def record_eof(self, expected_articles: int):
         self.expected_articles = expected_articles
