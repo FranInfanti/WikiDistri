@@ -41,7 +41,7 @@ services:
       PYTHONUNBUFFERED: '1'
       HOST: gateway
       PORT: "5000"
-      JOBS: 5
+      JOBS: 3
       BATCH_SIZE: "50"
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
@@ -97,8 +97,8 @@ services:
       MOM_HOST: rabbitmq
       FILTER_PREFIX: filter
       GATEWAY_PREFIX: gateway
-      FILTER_INPUT_QUEUE: filter_queue
-      IMAGE_DOWNLOADER_OUTPUT_QUEUE: image_downloader_queue
+      FILTER_QUEUE: filter_queue
+      IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -114,8 +114,8 @@ services:
       MOM_HOST: rabbitmq
       FILTER_PREFIX: filter
       GATEWAY_PREFIX: gateway
-      FILTER_INPUT_QUEUE: filter_queue
-      IMAGE_DOWNLOADER_OUTPUT_QUEUE: image_downloader_queue
+      FILTER_QUEUE: filter_queue
+      IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -131,8 +131,8 @@ services:
       MOM_HOST: rabbitmq
       FILTER_PREFIX: filter
       GATEWAY_PREFIX: gateway
-      FILTER_INPUT_QUEUE: filter_queue
-      IMAGE_DOWNLOADER_OUTPUT_QUEUE: image_downloader_queue
+      FILTER_QUEUE: filter_queue
+      IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
     depends_on:
       rabbitmq:
         condition: service_healthy
