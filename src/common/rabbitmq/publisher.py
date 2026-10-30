@@ -5,40 +5,40 @@ from common import middleware
 from queue import Queue, Empty
 
 class RabbitPublisher:
-    _POLL_INTERVAL = 10.0
+    _POLL_INTERVAL = 5.0
 
     _FLAG_QUEUE = 0
     _FLAG_EXCHANGE = 1
 
-    def __init__(self, host: str, queues: list, exchanges: dict = {}):
+    def __init__(
+        self,
+        host: str,
+        queues: list[str] | None = None,
+        exchanges: dict[int, str] | None = None
+    ):
         self.host = host
-        self.stopping = False
-        self.state_lock = threading.Lock()
-
-        self.queues = {
-            queue_name: middleware.MessageMiddlewareQueueRabbitMQ(
-                host=self.host,
-                queue_name=queue_name
-            )
-            for queue_name in queues
-        }
-
-        self.exchanges = {
-            exchange_id: middleware.MessageMiddlewareExchangeRabbitMQ(
-                host=self.host,
-                exchange_name=exchange_prefix,
-                routing_keys=[f"{exchange_prefix}_{exchange_id}"]
-            )
-            for exchange_id, exchange_prefix in exchanges.items()
-        }
+        self.queue_conf = list(queues) if queues is not None else []
+        self.exchange_conf = dict(exchanges) if exchanges is not None else {}
 
         self.requests = Queue()
+        self.started = threading.Event()
+        self.state_lock = threading.Lock()
+
+        self.startup_error = None
+        self.failure = None
+        self.stopping = False
+
         self.thread = threading.Thread(
             target=self._run,
             name="Publisher"
         )
 
         self.thread.start()
+        self.started.wait()
+        
+        if self.startup_error:
+            self.thread.join()
+            raise self.startup_error
 
     def stop(self):
         with self.state_lock:
@@ -77,13 +77,33 @@ class RabbitPublisher:
             raise request[1]
 
     def _run(self):
+        queues = {}
+        exchanges = {}
+        try:
+            for queue_name in self.queue_conf:
+                queues[queue_name] = middleware.MessageMiddlewareQueueRabbitMQ(
+                    host=self.host,
+                    queue_name=queue_name
+                )
+            for exchange_id, exchange_prefix in self.exchange_conf.items():
+                exchanges[exchange_id] = middleware.MessageMiddlewareExchangeRabbitMQ(
+                    host=self.host,
+                    exchange_name=exchange_prefix,
+                    routing_keys=[f"{exchange_prefix}_{exchange_id}"]
+                )
+        except Exception as err:
+            self.startup_error = err
+            return
+        finally:
+            self.started.set()
+
         while True:
             try:
                 request = self.requests.get(timeout=self._POLL_INTERVAL)
             except Empty:
-                for queue in self.queues.values():
+                for queue in queues.values():
                     queue.conn.process_data_events(time_limit=0)
-                for exchange in self.exchanges.values():
+                for exchange in exchanges.values():
                     exchange.conn.process_data_events(time_limit=0)
                 continue
 
@@ -94,27 +114,29 @@ class RabbitPublisher:
             completed, _err, message, flag, dest_name  = request
             try:
                 if flag == self._FLAG_QUEUE:
-                    self.queues[dest_name].send(message)
+                    queues[dest_name].send(message)
                 else:
-                    exchanges = [self.exchanges[dest_name]] \
-                        if dest_name else self.exchanges.values()
+                    dest_exchanges = [exchanges[dest_name]] \
+                        if dest_name else exchanges.values()
 
-                    for exchange in exchanges:
-                        exchange.send(message)
+                    for dest_exchange in dest_exchanges:
+                        dest_exchange.send(message)
             except Exception as err:
                 request[1] = err
             finally:
                 completed.set()
                 self.requests.task_done()
+        self._close_conns()
 
+    def _close_conns(self):
         for queue in self.queues.values():
             try:
                 queue.close()
-            except:
-                logging.warning("Failed to close RabbitMQ publisher connection")
+            except Exception:
+                logging.warning("Failed to close RabbitMQ publisher queue connection", exc_info=True)
 
         for exchange in self.exchanges.values():
             try:
                 exchange.close()
-            except:
-                logging.warning("Failed to close RabbitMQ publisher connection")
+            except Exception:
+                logging.warning("Failed to close RabbitMQ publisher exchange connection", exc_info=True)

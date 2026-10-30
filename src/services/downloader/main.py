@@ -33,21 +33,15 @@ class ImageDownloader():
     def __init__(self):
         signal.signal(signalnum=signal.SIGTERM, handler=self._sigterm_handler)
         
-        self.is_running = True
-        self.requests_states = {}
-        self.exchange_consumer = None
-
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST,
             queue_name=IMAGE_DOWNLOADER_QUEUE
         )
-
         self.input_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
             host=MOM_HOST,
             exchange_name=IMAGE_DOWNLOADER_PREFIX,
             routing_keys=[f"{IMAGE_DOWNLOADER_PREFIX}_{ID}"]
         )
-
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
             queues=[f"{GATEWAY_PREFIX}_2"],
@@ -57,6 +51,9 @@ class ImageDownloader():
                 if i != ID
             }
         )
+        self.is_running = True
+        self.exchange_consumer = None
+        self.message_tracker = {}
 
     def _sigterm_handler(self, _signum, _frame):
         logging.info("SIGTERM signal received, setting shutdown flag")
@@ -73,8 +70,6 @@ class ImageDownloader():
             logging.warning("Failed to stop the input exchange consumer during shutdown", exc_info=True)
 
     def _download_image(self, req_id: int, batches: int, messages: list):
-        logging.info(f"[{req_id}] - Downloading {batches} images")
-
         for message in messages:
             name, url, image = message
             image_bytes = None
@@ -89,7 +84,7 @@ class ImageDownloader():
                     response.raise_for_status()
                     image_bytes = base64.b64encode(response.content).decode(message_protocol.ENCODING)
                     image_content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip()
-                    logging.info(f"[{req_id}] - Image downloaded")
+                    logging.info(f"[{req_id}] - The image has been downloaded")
                 except requests.HTTPError as e:
                     logging.warning(
                         f"HTTP Error: {e.response.status_code}; reason: {e.response.reason}"
@@ -107,16 +102,17 @@ class ImageDownloader():
                 )
             )
 
-            self.requests_states.setdefault(req_id, entity.request_state.RequestState()).record_article()
+            self.message_tracker.setdefault(req_id, entity.message_tracker.MessageTracker()).record_recv()
         
-    def _process_eof(self, req_id: int, _: int, articles_sent: int):
-        request_state = self.requests_states.setdefault(req_id, entity.request_state.RequestState())
-        request_state.record_eof(articles_sent)
+    def _process_eof(self, req_id: int, _: int, expected_messages: int):
+        logging.info(f"[{req_id}] - Receive the end of the images")
+        
+        tracker = self.message_tracker.setdefault(req_id, entity.message_tracker.MessageTracker())
+        tracker.record_expected(expected_messages)
 
         if IMAGE_DOWNLOADER_AMOUNT == 1:
-            if request_state.all_articles_recv():
-                logging.info(f"[{req_id}] - All articles have been processed")
-
+            if tracker.all_recv():
+                logging.info(f"[{req_id}] - All of the images have been downloaded !!!")
                 self.publisher.publish_queue(
                     queue=f"{GATEWAY_PREFIX}_2",
                     message=message_protocol.internal.serialize(
@@ -126,12 +122,13 @@ class ImageDownloader():
                 )
             else:
                 logging.error(
-                    f"[{req_id}] - Article count mismatch: expected %s, received %s",
-                    request_state.expected_articles,
-                    request_state.articles_recv
+                    f"[%s] - Article count mismatch: expected %s, received %s",
+                    req_id,
+                    tracker.expected_messages,
+                    tracker.recv_messages
                 )
 
-            del self.requests_states[req_id]
+            del self.message_tracker[req_id]
             return
 
         self.publisher.publish_exchange(
@@ -144,27 +141,31 @@ class ImageDownloader():
         )
 
     def _process_prepare(self, req_id: int, _: int, exchange_id: int):
-        request_state = self.requests_states.setdefault(req_id, entity.request_state.RequestState())
-        
-        logging.info(f"[{req_id}] - Articles received: {request_state.articles_recv}")
+        tracker = self.message_tracker.setdefault(req_id, entity.message_tracker.MessageTracker())
+        logging.info(
+            "[%s] - Send %s downloaded images to filter_%s",
+            req_id,
+            tracker.recv_messages,
+            exchange_id
+        )
 
         self.publisher.publish_exchange(
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_OK,
                 req_id=req_id,
                 batches=1,
-                message=request_state.articles_recv
+                message=tracker.recv_messages
             ),
             exchange_id=exchange_id
         )
 
     def _process_ok(self, req_id: int, _: int, articles_recv: int):
-        request_state = self.requests_states.setdefault(req_id, entity.request_state.RequestState())
-        request_state.record_peer_count(articles_recv)
+        tracker = self.message_tracker.setdefault(req_id, entity.message_tracker.MessageTracker())
+        tracker.record_peer(articles_recv)
 
-        if request_state.all_peers(IMAGE_DOWNLOADER_AMOUNT):
-            if request_state.all_articles_recv():
-                logging.info(f"[{req_id}] - All articles were processed")
+        if tracker.all_peers(IMAGE_DOWNLOADER_AMOUNT - 1):
+            if tracker.all_recv():
+                logging.info(f"[{req_id}] - All of the images have been downloaded !!!")
 
                 self.publisher.publish_exchange(
                     message=message_protocol.internal.serialize(
@@ -183,20 +184,21 @@ class ImageDownloader():
 
                 del self.requests_states[req_id]
             else:
-                logging.info(f"[{req_id}] - There are still items that were not processed.")
+                logging.info(f"[{req_id}] - There are still images that have not been downloaded")
                 
-                request_state.reset_peers_count()
+                tracker.reset_peers()
                 self.publisher.publish_exchange(
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_PREPARE,
                         req_id=req_id,
+                        batches=1,
                         message=ID
                     )
                 )
 
     def _delete_client(self, req_id: int, *_):
-        logging.info(f"[{req_id}] - Deleting client")
-        self.requests_states.pop(req_id, None)
+        logging.info(f"[{req_id}] - Eliminating the client")
+        self.message_tracker.pop(req_id, None)
 
     def _recv_message(self, message, ack, nack):
         try:
