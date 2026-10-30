@@ -19,6 +19,7 @@ SUM_WORDS_QUEUE_PREFIX = os.environ["SUM_WORDS_QUEUE_PREFIX"]
 SUM_WORDS_COUNT = int(os.environ.get("SUM_WORDS_COUNT", 1))
 
 JOIN_QUEUE = os.environ["JOIN_QUEUE"]
+JOIN_COUNT = int(os.environ["JOIN_COUNT"])
 SUM_AMOUNT_QUEUE = os.environ["SUM_AMOUNT_QUEUE"]
 
 CUTOFF_YEAR = 2021
@@ -50,9 +51,11 @@ class WordReader:
             f"{SUM_WORDS_QUEUE_PREFIX}_{i}" for i in range(SUM_WORDS_COUNT)
         ]
 
+        self.join_queue_names = [f"{JOIN_QUEUE}_{i}" for i in range(JOIN_COUNT)]
+        
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
-            queues=[*self.sum_words_queue_names, JOIN_QUEUE, SUM_AMOUNT_QUEUE],
+            queues=[*self.sum_words_queue_names, *self.join_queue_names, SUM_AMOUNT_QUEUE],
         )
 
         self.barrier = eof.EofBarrier(
@@ -94,7 +97,7 @@ class WordReader:
  
     def _handle_articles(self, req_id: int, articles: list[list]):
         words_by_shard: dict[int, dict[str, list[int]]] = {}
-        join_batch = []
+        join_batches: dict[int, list] = {}
         amount_batch = []
 
         for article in articles:
@@ -103,10 +106,10 @@ class WordReader:
             words = tokenize(abstract or "", in_language)
  
             self._collect_unique_words(req_id, words, in_language, words_by_shard)
-            self._collect_word_amount(url, len(words), date_modified, join_batch, amount_batch)
+            self._collect_word_amount(req_id, url, len(words), date_modified, join_batches, amount_batch)
  
         self._send_unique_words(req_id, words_by_shard)
-        self._send_word_amounts(req_id, join_batch, amount_batch)
+        self._send_word_amounts(req_id, join_batches, amount_batch)
 
         self.barrier.record_articles(req_id, len(articles), sent=len(amount_batch))
 
@@ -124,14 +127,15 @@ class WordReader:
             entry[1] += fr_count
 
     @staticmethod
-    def _collect_word_amount(url, amount, date_modified, join_batch, amount_batch):
+    def _collect_word_amount(req_id, url, amount, date_modified, join_batches, amount_batch):
         if date_modified is None:
             logging.warning(f"Article without date_modified: {url}")
             return
  
         year = datetime.strptime(date_modified, DATE_FORMAT).year
         if year >= CUTOFF_YEAR:
-            join_batch.append([url, amount])
+            shard = hashing.shard_for(JOIN_COUNT, req_id, url)
+            join_batches.setdefault(shard, []).append([url, amount])
         else:
             amount_batch.append([amount])
 
@@ -146,16 +150,16 @@ class WordReader:
                 ),
             )
 
-    def _send_word_amounts(self, req_id, join_batch, amount_batch):
-        if join_batch:
+    def _send_word_amounts(self, req_id, join_batches, amount_batch):
+        for shard, batch in join_batches.items():
             self.publisher.publish_queue(
-                JOIN_QUEUE,
+                self.join_queue_names[shard],
                 message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
-                    req_id=req_id, batches=len(join_batch), message=join_batch,
+                    req_id=req_id, batches=len(batch), message=batch,
                 ),
             )
-            logging.debug("req_id=%s -> %s: %s articles", req_id, JOIN_QUEUE, len(join_batch))
+            logging.debug("req_id=%s -> %s: %s articles", req_id, JOIN_QUEUE, len(join_batches))
 
         if amount_batch:
             self.publisher.publish_queue(
@@ -177,7 +181,7 @@ class WordReader:
             opcode=message_protocol.OPCODE_EOF,
             req_id=req_id,
         )
-        for name in [*self.sum_words_queue_names, JOIN_QUEUE]:
+        for name in [*self.sum_words_queue_names, *self.join_queue_names]:
             self.publisher.publish_queue(name, plain_eof)
             logging.info("req_id=%s: EOF -> %s", req_id, name)
 
