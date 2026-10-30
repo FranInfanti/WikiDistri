@@ -149,7 +149,7 @@ class Sum:
             )
         )
 
-    def _send_final_eof(self, req_id: int):
+    def _send_final_eof(self, req_id: int, _sent_total: int = 0):
         """Called by the barrier, in the coordinator only, once every Sum finished req_id."""
         logging.info(f"req_id={req_id}: all Sums finished, sending the EOF to the gateway")
         self._gateway_send(

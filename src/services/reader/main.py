@@ -2,12 +2,10 @@ import os
 import re
 import signal
 import logging
-import threading
 
 from datetime import datetime
 from stopwords import STOPWORDS
 from common import middleware, message_protocol, hashing, eof, rabbitmq
-
 
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
 
@@ -48,7 +46,6 @@ class WordReader:
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST, queue_name=INPUT_QUEUE
         )
-
         self.sum_words_queue_names = [
             f"{SUM_WORDS_QUEUE_PREFIX}_{i}" for i in range(SUM_WORDS_COUNT)
         ]
@@ -66,11 +63,10 @@ class WordReader:
             on_all_received=self._forward_eof,
         )
 
-
     def _sigterm_handler(self, _signum, _frame):
         logging.info("Shutdown signal received, stopping consumer...")
         self.is_running = False
- 
+
         try:
             self.input_queue.stop_consuming()
         except Exception:
@@ -81,19 +77,16 @@ class WordReader:
     def process_message(self, message, ack, nack):
         try:
             opcode, req_id, _batches, payload = message_protocol.internal.deserialize(message)
- 
+
             if opcode == message_protocol.OPCODE_DATA:
                 self._handle_articles(req_id, payload)
-                self.barrier.record_articles(req_id, len(payload))
                 logging.debug("req_id=%s: processed %s articles", req_id, len(payload))
-                # process_message, rama DATA, después de procesar el batch
-                
             elif opcode == message_protocol.OPCODE_EOF:
                 logging.info(f"Received EOF for req_id: {req_id}, articles sent: {payload}")
                 self.barrier.on_eof(req_id, payload)
             else:
                 logging.warning(f"Unexpected opcode for req_id {req_id}: {opcode}")
- 
+
             ack()
         except Exception:
             logging.exception("Error processing message")
@@ -115,20 +108,21 @@ class WordReader:
         self._send_unique_words(req_id, words_by_shard)
         self._send_word_amounts(req_id, join_batch, amount_batch)
 
+        self.barrier.record_articles(req_id, len(articles), sent=len(amount_batch))
 
     @staticmethod
     def _collect_unique_words(req_id, words, language, words_by_shard):
         counts = language_counts(language)
         if counts is None:
             return
- 
+
         en_count, fr_count = counts
         for word in set(words):
-            shard_words = words_by_shard.setdefault(hashing.shard_for(SUM_WORDS_COUNT , req_id, word), {})
-            entry = shard_words.setdefault(word, [0, 0])
+            shard = hashing.shard_for(SUM_WORDS_COUNT, req_id, word)
+            entry = words_by_shard.setdefault(shard, {}).setdefault(word, [0, 0])
             entry[0] += en_count
             entry[1] += fr_count
- 
+
     @staticmethod
     def _collect_word_amount(url, amount, date_modified, join_batch, amount_batch):
         if date_modified is None:
@@ -161,6 +155,8 @@ class WordReader:
                     req_id=req_id, batches=len(join_batch), message=join_batch,
                 ),
             )
+            logging.debug("req_id=%s -> %s: %s articles", req_id, JOIN_QUEUE, len(join_batch))
+
         if amount_batch:
             self.publisher.publish_queue(
                 SUM_AMOUNT_QUEUE,
@@ -170,13 +166,31 @@ class WordReader:
                 ),
             )
 
-    def _forward_eof(self, req_id):
-        eof_message = message_protocol.internal.serialize(
-            opcode=message_protocol.OPCODE_EOF, req_id=req_id,
+    def _forward_eof(self, req_id: int, sent_total: int = 0):
+        """
+        sent_total = entries sent to sum_amount by ALL the replicas. Only
+        sum_amount needs it, so the other EOFs carry no payload.
+        """
+        logging.info(f"All articles received for req_id: {req_id}. Forwarding EOF to next stages...")
+
+        plain_eof = message_protocol.internal.serialize(
+            opcode=message_protocol.OPCODE_EOF,
+            req_id=req_id,
         )
-        for name in [*self.sum_words_queue_names, JOIN_QUEUE, SUM_AMOUNT_QUEUE]:
-            self.publisher.publish_queue(name, eof_message)
+        for name in [*self.sum_words_queue_names, JOIN_QUEUE]:
+            self.publisher.publish_queue(name, plain_eof)
             logging.info("req_id=%s: EOF -> %s", req_id, name)
+
+        self.publisher.publish_queue(
+            SUM_AMOUNT_QUEUE,
+            message_protocol.internal.serialize(
+                opcode=message_protocol.OPCODE_EOF,
+                req_id=req_id,
+                batches=1,
+                message=sent_total,
+            ),
+        )
+        logging.info("req_id=%s: EOF(%s) -> %s", req_id, sent_total, SUM_AMOUNT_QUEUE)
 
     def start(self):
         try:
