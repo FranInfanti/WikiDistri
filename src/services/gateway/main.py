@@ -94,7 +94,7 @@ class Gateway:
         self.clients_requests_lock = threading.Lock()
 
     def _sigterm_handler(self, _signum, _frame):
-        logging.info("SIGTERM signal received, setting shutdown flag and closing listener")
+        logging.info("SIGTERM signal received, setting shutdown flag")
         self.is_running = False
 
         if self.server_socket:
@@ -122,12 +122,15 @@ class Gateway:
         remaining_threads = [thread.name for thread in active_threads if thread.is_alive()]
         if remaining_threads:
             logging.warning(f"Shutdown timed out with still {len(remaining_threads)} active threads")
-        else:
-            logging.info("All active threads stopped; closing client connections")
 
         with self.clients_requests_lock:
             for client in self.clients_requests.values():
                 client.close()
+
+        if self.publisher.stop(timeout=max(0.0, deadline - time.time())):
+            logging.warning(f"Shutdown timed out with still one active thread")
+        else:
+            logging.info("All active threads stopped")
 
     def _publish_eof(self, req_id: int, articles_sent: int):
         self.publisher.publish_queue(
@@ -355,24 +358,22 @@ class Gateway:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
                 self.server_socket = server_socket
-
                 server_socket.bind((self.server_host, self.server_port))
                 server_socket.listen()
-                logging.info("Listening to connections")
 
+                logging.info("Listening to connections")
                 self._handle_client_response()
                 while self.is_running:
                     try:
                         client_socket, _ = server_socket.accept()
                     except OSError:
-                        if not self.is_running:
-                            break
-                        raise
+                        if self.is_running:
+                            raise
+                        logging.warning("Interrupted by the SIGTERM")
+                        return
                     self._handle_client_request(client_socket)
         finally:
             self._wait_for_threads()
-
-            self.publisher.stop()
             for input_queue in self.input_queues.values():
                 input_queue.close()
 
@@ -381,6 +382,7 @@ def main():
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(threadName)s: %(message)s"
     )
+    logging.getLogger("pika").propagate = False
     
     try:
         Gateway(HOST, PORT).start()

@@ -40,15 +40,12 @@ class RabbitPublisher:
             self.thread.join()
             raise self.startup_error
 
-    def stop(self):
+    def stop(self, timeout: float):
         with self.state_lock:
-            if self.stopping:
-                return
-
             self.stopping = True
             self.requests.put(None)
-
-        self.thread.join()
+        self.thread.join(timeout=timeout)
+        return self.thread.is_alive()
 
     def publish_queue(self, queue: str, message: bytes):
         completed = threading.Event()
@@ -126,17 +123,17 @@ class RabbitPublisher:
             finally:
                 completed.set()
                 self.requests.task_done()
-        self._close_conns()
+        _close_conns(queues, exchanges)
 
-    def _close_conns(self):
-        for queue in self.queues.values():
-            try:
-                queue.close()
-            except Exception:
-                logging.warning("Failed to close RabbitMQ publisher queue connection", exc_info=True)
+def _close_conns(queues, exchanges):
+    for queue in queues.values():
+        try:
+            queue.close()
+        except Exception:
+            logging.warning("Failed to close RabbitMQ publisher queue connection", exc_info=True)
 
-        for exchange in self.exchanges.values():
-            try:
-                exchange.close()
-            except Exception:
-                logging.warning("Failed to close RabbitMQ publisher exchange connection", exc_info=True)
+    for exchange in exchanges.values():
+        try:
+            exchange.close()
+        except Exception:
+            logging.warning("Failed to close RabbitMQ publisher exchange connection", exc_info=True)

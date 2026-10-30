@@ -1,4 +1,5 @@
 import os
+import time
 import signal
 import logging
 import threading
@@ -15,6 +16,7 @@ FILTER_QUEUE = os.environ["FILTER_QUEUE"]
 IMAGE_DOWNLOADER_QUEUE = os.environ["IMAGE_DOWNLOADER_QUEUE"] 
 
 class Filter:
+    _TIMEOUT = 5.0
 
     def __init__(self):
         signal.signal(signal.SIGTERM, self._sigterm_handler)
@@ -51,16 +53,37 @@ class Filter:
     def _sigterm_handler(self, _signum, _frame):
         logging.info("SIGTERM signal received, setting shutdown flag")
         self.is_running = False
-
         try:
             self.input_queue.stop_consuming()
         except Exception:
             pass
 
+    def _wait_for_threads(self):
+        deadline = time.time() + self._TIMEOUT
+
         try:
             self.input_exchange.stop_consuming_threadsafe()
         except Exception:
-            pass
+            logging.warning("Failed to stop the input exchange consumer during shutdown", exc_info=True)
+
+        logging.info(f"Waiting up to {self._TIMEOUT} seconds for one active thread to stop")
+        if self.exchange_consumer:
+            remaining = max(0.0, deadline - time.time())
+            if remaining > 0:
+                self.exchange_consumer.join(timeout=remaining)
+            if self.exchange_consumer.is_alive():
+                logging.warning(f"Shutdown timed out with still one active threads")
+            self.input_exchange.close()
+
+        finish = ( 
+            self.publisher_downloader.stop(timeout=max(0.0, deadline - time.time())) or
+            self.publisher_gateway.stop(timeout=max(0.0, deadline - time.time())) or
+            self.publisher_filter.stop(timeout=max(0.0, deadline - time.time()))
+        )
+        if finish:
+            logging.warning(f"Shutdown timed out with still active threads")
+        else:
+            logging.info("All active threads stopped")
 
     def _filter_message(self, req_id: int, _: int, messages: list[list]):
         logging.info(f"[{req_id}] - Receive articles")
@@ -250,23 +273,22 @@ class Filter:
             )
             self.exchange_consumer.start()
 
+            logging.info("Waiting to receive messages")
             self.input_queue.start_consuming(self._process_message)
         except:
             if self.is_running:
                 raise
+            logging.warning("Interrupted by the SIGTERM")
         finally:
-            self.publisher_downloader.stop()
-            self.publisher_gateway.stop()
-            self.publisher_filter.stop()
-
             self.input_queue.close()
-            self.input_exchange.close()
+            self._wait_for_threads()
 
 def main():
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(threadName)s: %(message)s"
     )
+    logging.getLogger("pika").propagate = False
 
     try:
         Filter().start()

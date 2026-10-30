@@ -1,4 +1,5 @@
 import os
+import time
 import signal
 import base64
 import logging
@@ -29,6 +30,7 @@ def define_exchanges(host, prefix, amount, exclude_id = None):
     return exchanges
 
 class ImageDownloader():
+    _TIMEOUT = 5.0
 
     def __init__(self):
         signal.signal(signalnum=signal.SIGTERM, handler=self._sigterm_handler)
@@ -64,12 +66,29 @@ class ImageDownloader():
         except Exception:
             logging.warning("Failed to stop the input queue consumer during shutdown", exc_info=True)
 
+    def _wait_for_threads(self):
+        deadline = time.time() + self._TIMEOUT
+
         try:
             self.input_exchange.stop_consuming_threadsafe()
         except Exception:
             logging.warning("Failed to stop the input exchange consumer during shutdown", exc_info=True)
 
-    def _download_image(self, req_id: int, batches: int, messages: list):
+        logging.info(f"Waiting up to {self._TIMEOUT} seconds for active threads to stop")
+        if self.exchange_consumer:
+            remaining = max(0.0, deadline - time.time())
+            if remaining > 0:
+                self.exchange_consumer.join(timeout=remaining)
+            if self.exchange_consumer.is_alive():
+                logging.warning(f"Shutdown timed out with still active threads")
+            self.input_exchange.close()
+
+        if self.publisher.stop(timeout=max(0.0, deadline - time.time())):
+            logging.warning(f"Shutdown timed out with still one active thread")
+        else:
+            logging.info("All active threads stopped")
+
+    def _download_image(self, req_id: int, _batches: int, messages: list):
         for message in messages:
             name, url, image = message
             image_bytes = None
@@ -80,7 +99,7 @@ class ImageDownloader():
                     headers = {
                         "User-Agent": "Mozilla/5.0"
                     }
-                    response = requests.get(url=image, headers=headers, timeout=(5, 30))
+                    response = requests.get(url=image, headers=headers, timeout=self._TIMEOUT * 2)
                     response.raise_for_status()
                     image_bytes = base64.b64encode(response.content).decode(message_protocol.ENCODING)
                     image_content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip()
@@ -223,14 +242,13 @@ class ImageDownloader():
         
     def start(self):
         try:
-            logging.info(f"Start consuming from the inner exchange: {IMAGE_DOWNLOADER_PREFIX}_{ID}")
             self.exchange_consumer = threading.Thread(
                 target=self.input_exchange.start_consuming,
                 args=(self._recv_message,)
             )
             self.exchange_consumer.start()
 
-            logging.info(f"Start consuming from the input queue: {IMAGE_DOWNLOADER_QUEUE}")
+            logging.info("Waiting to receive messages")
             self.input_queue.start_consuming(self._recv_message)
         except Exception:
             if self.is_running:
@@ -238,18 +256,16 @@ class ImageDownloader():
                 raise
             logging.warning("Interrupted by the SIGTERM")
         finally:
-            logging.info("Releasing the resources")
-            if self.exchange_consumer is not None:
-                self.exchange_consumer.join()
-            self.publisher.stop()
             self.input_queue.close()
-            self.input_exchange.close()
+            self._wait_for_threads()
 
 def main():
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(threadName)s: %(message)s"
     )
+    logging.getLogger("pika").propagate = False
+
     try:
         ImageDownloader().start()
     except Exception:
