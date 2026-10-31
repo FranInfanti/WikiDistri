@@ -41,7 +41,7 @@ services:
       PYTHONUNBUFFERED: '1'
       HOST: gateway
       PORT: '5000'
-      JOBS: '4'
+      JOBS: '5'
       BATCH_SIZE: '50'
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
@@ -167,6 +167,7 @@ services:
       SUM_WORDS_QUEUE_PREFIX: sum_words_queue
       SUM_WORDS_COUNT: '4'
       JOIN_QUEUE: join_queue
+      JOIN_COUNT: '3'
       SUM_AMOUNT_QUEUE: sum_amount_queue
     depends_on:
       rabbitmq:
@@ -185,6 +186,7 @@ services:
       SUM_WORDS_QUEUE_PREFIX: sum_words_queue
       SUM_WORDS_COUNT: '4'
       JOIN_QUEUE: join_queue
+      JOIN_COUNT: '3'
       SUM_AMOUNT_QUEUE: sum_amount_queue
     depends_on:
       rabbitmq:
@@ -203,6 +205,7 @@ services:
       SUM_WORDS_QUEUE_PREFIX: sum_words_queue
       SUM_WORDS_COUNT: '4'
       JOIN_QUEUE: join_queue
+      JOIN_COUNT: '3'
       SUM_AMOUNT_QUEUE: sum_amount_queue
     depends_on:
       rabbitmq:
@@ -221,6 +224,7 @@ services:
       SUM_WORDS_QUEUE_PREFIX: sum_words_queue
       SUM_WORDS_COUNT: '4'
       JOIN_QUEUE: join_queue
+      JOIN_COUNT: '3'
       SUM_AMOUNT_QUEUE: sum_amount_queue
     depends_on:
       rabbitmq:
@@ -312,6 +316,153 @@ services:
       SUM_WORDS_COUNT: '4'
       GATEWAY_PREFIX: gateway
       ID: '0'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  sum_amount_0:
+    build:
+      context: ./src/
+      dockerfile: services/sum_amount/Dockerfile
+    container_name: sum_amount_0
+    environment:
+      PYTHONUNBUFFERED: '1'
+      MOM_HOST: rabbitmq
+      ID: '0'
+      SUM_AMOUNT_QUEUE: sum_amount_queue
+      SUM_AMOUNT_PREFIX: sum_amount
+      SUM_AMOUNT_COUNT: '3'
+      AVERAGE_QUEUE: average_queue
+      AVERAGE_COUNT: '3'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  sum_amount_1:
+    build:
+      context: ./src/
+      dockerfile: services/sum_amount/Dockerfile
+    container_name: sum_amount_1
+    environment:
+      PYTHONUNBUFFERED: '1'
+      MOM_HOST: rabbitmq
+      ID: '1'
+      SUM_AMOUNT_QUEUE: sum_amount_queue
+      SUM_AMOUNT_PREFIX: sum_amount
+      SUM_AMOUNT_COUNT: '3'
+      AVERAGE_QUEUE: average_queue
+      AVERAGE_COUNT: '3'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  sum_amount_2:
+    build:
+      context: ./src/
+      dockerfile: services/sum_amount/Dockerfile
+    container_name: sum_amount_2
+    environment:
+      PYTHONUNBUFFERED: '1'
+      MOM_HOST: rabbitmq
+      ID: '2'
+      SUM_AMOUNT_QUEUE: sum_amount_queue
+      SUM_AMOUNT_PREFIX: sum_amount
+      SUM_AMOUNT_COUNT: '3'
+      AVERAGE_QUEUE: average_queue
+      AVERAGE_COUNT: '3'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  average_0:
+    build:
+      context: ./src/
+      dockerfile: services/average/Dockerfile
+    container_name: average_0
+    environment:
+      PYTHONUNBUFFERED: '1'
+      MOM_HOST: rabbitmq
+      ID: '0'
+      AVERAGE_QUEUE: average_queue
+      SUM_AMOUNT_COUNT: '3'
+      JOIN_AVERAGE_QUEUE: join_average_queue
+      JOIN_COUNT: '3'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  average_1:
+    build:
+      context: ./src/
+      dockerfile: services/average/Dockerfile
+    container_name: average_1
+    environment:
+      PYTHONUNBUFFERED: '1'
+      MOM_HOST: rabbitmq
+      ID: '1'
+      AVERAGE_QUEUE: average_queue
+      SUM_AMOUNT_COUNT: '3'
+      JOIN_AVERAGE_QUEUE: join_average_queue
+      JOIN_COUNT: '3'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  average_2:
+    build:
+      context: ./src/
+      dockerfile: services/average/Dockerfile
+    container_name: average_2
+    environment:
+      PYTHONUNBUFFERED: '1'
+      MOM_HOST: rabbitmq
+      ID: '2'
+      AVERAGE_QUEUE: average_queue
+      SUM_AMOUNT_COUNT: '3'
+      JOIN_AVERAGE_QUEUE: join_average_queue
+      JOIN_COUNT: '3'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  join_0:
+    build:
+      context: ./src/
+      dockerfile: services/join_average/Dockerfile
+    container_name: join_0
+    environment:
+      PYTHONUNBUFFERED: '1'
+      MOM_HOST: rabbitmq
+      ID: '0'
+      JOIN_QUEUE: join_queue
+      JOIN_AVERAGE_QUEUE: join_average_queue
+      GATEWAY_PREFIX: gateway
+      CHUNK_SIZE: '1000'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  join_1:
+    build:
+      context: ./src/
+      dockerfile: services/join_average/Dockerfile
+    container_name: join_1
+    environment:
+      PYTHONUNBUFFERED: '1'
+      MOM_HOST: rabbitmq
+      ID: '1'
+      JOIN_QUEUE: join_queue
+      JOIN_AVERAGE_QUEUE: join_average_queue
+      GATEWAY_PREFIX: gateway
+      CHUNK_SIZE: '1000'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  join_2:
+    build:
+      context: ./src/
+      dockerfile: services/join_average/Dockerfile
+    container_name: join_2
+    environment:
+      PYTHONUNBUFFERED: '1'
+      MOM_HOST: rabbitmq
+      ID: '2'
+      JOIN_QUEUE: join_queue
+      JOIN_AVERAGE_QUEUE: join_average_queue
+      GATEWAY_PREFIX: gateway
+      CHUNK_SIZE: '1000'
     depends_on:
       rabbitmq:
         condition: service_healthy
