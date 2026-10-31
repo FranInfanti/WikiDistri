@@ -98,7 +98,14 @@ class WikipediaArticle:
         return False
 
     def section_contains(self, word: str):
-        if self.sections:
-            return word in self.sections
+        import json
+        
+        if not self.sections:
+            return False
 
-        return False
+        sections = json.loads(self.sections)
+
+        return any(
+            word.lower() in section.get("name", "").lower()
+            for section in sections
+        )

@@ -1,1 +1,2 @@
+from .message_tracker import MessageTracker
 from .wikipedia_article import WikipediaArticle

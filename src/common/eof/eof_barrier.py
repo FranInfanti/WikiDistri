@@ -11,18 +11,18 @@ RETRY_DELAY = 0.5
 class _RequestState:
     expected_articles: int | None = None
     articles_recv: int = 0
-    peer_counts: list[int] = field(default_factory=list)
-
+    peer_counts: dict[int, int] = field(default_factory=dict)
+    retry_scheduled: bool = False
 
 class EofBarrier:
     """
-    Coordinates the EOF of a request between N replicas of the same stage
+    Coordinates the EOF of a request between N nodes of the same stage
     using the PREPARE / OK / COMMIT protocol.
 
-    The replica that receives the EOF from the shared input queue asks its
+    The node that receives the EOF from the shared input queue asks its
     peers (through a direct exchange, one routing key per replica) how many
     articles each one processed. If the sum matches `articles_sent`, it
-    commits and `on_all_received(req_id)` is called ONLY in that replica.
+    commits and `on_all_received(req_id)` is called ONLY in that node.
     Otherwise it waits `retry_delay` seconds and asks again.
 
     Usage:
@@ -48,6 +48,8 @@ class EofBarrier:
         self.on_all_received = on_all_received
         self.retry_delay = retry_delay
 
+        self._host = host
+        self._prefix = prefix
         self._states: dict[int, _RequestState] = {}
         self._lock = threading.RLock()
         self._timers: set[threading.Timer] = set()
@@ -60,15 +62,30 @@ class EofBarrier:
             routing_keys=[f"{prefix}_{instance_id}"],
         )
         self._peers = {
-            i: middleware.MessageMiddlewareExchangeRabbitMQ(
-                host=host,
-                exchange_name=prefix,
-                routing_keys=[f"{prefix}_{i}"],
-            )
+            i: self._new_peer(i)
             for i in range(instances)
             if i != instance_id
         }
 
+    def _new_peer(self, peer_id: int):
+        return middleware.MessageMiddlewareExchangeRabbitMQ(
+            host=self._host,
+            exchange_name=self._prefix,
+            routing_keys=[f"{self._prefix}_{peer_id}"],
+        )
+
+    def _publish(self, peer_id: int, data: bytes):
+        try:
+            self._peers[peer_id].send(data)
+        except Exception:
+            logging.warning("Connection to peer %s lost, reconnecting", peer_id)
+            try:
+                self._peers[peer_id].close()
+            except Exception:
+                pass
+            self._peers[peer_id] = self._new_peer(peer_id)
+            self._peers[peer_id].send(data)
+    
     def start(self):
         self._consumer = threading.Thread(
             target=self._input_exchange.start_consuming,
@@ -117,7 +134,7 @@ class EofBarrier:
         return self._states.setdefault(req_id, _RequestState())
 
     def _start_round(self, req_id: int) -> bool:
-        self._state(req_id).peer_counts = []
+        self._state(req_id).peer_counts = {}
         self._broadcast(message_protocol.OPCODE_PREPARE, req_id, self.instance_id)
         return self._evaluate(req_id)
 
@@ -128,12 +145,7 @@ class EofBarrier:
         if len(state.peer_counts) < len(self._peers):
             return False
 
-        logging.info(
-            "req_id=%s: own=%s peers=%s expected=%s",
-            req_id, state.articles_recv, state.peer_counts, state.expected_articles
-        )
-
-        total = sum(state.peer_counts) + state.articles_recv
+        total = sum(state.peer_counts.values()) + state.articles_recv
         if total == state.expected_articles:
             self._broadcast(message_protocol.OPCODE_COMMIT, req_id)
             del self._states[req_id]
@@ -147,9 +159,11 @@ class EofBarrier:
         return False
 
     def _schedule_retry(self, req_id: int):
-        if self._closed:
+        state = self._states[req_id]
+        if self._closed or state.retry_scheduled:
             return
 
+        state.retry_scheduled = True
         timer = threading.Timer(self.retry_delay, self._retry, args=(req_id,))
         timer.daemon = True
         self._timers.add(timer)
@@ -162,6 +176,7 @@ class EofBarrier:
             if self._closed or req_id not in self._states:
                 return
 
+            self._states[req_id].retry_scheduled = False
             done = self._start_round(req_id)
 
         if done:
@@ -169,11 +184,11 @@ class EofBarrier:
 
     def _broadcast(self, opcode: int, req_id: int, message=None):
         data = self._serialize(opcode, req_id, message)
-        for exchange in self._peers.values():
-            exchange.send(data)
+        for peer_id in self._peers:
+            self._publish(peer_id, data)
 
     def _send_to(self, peer_id: int, opcode: int, req_id: int, message=None):
-        self._peers[peer_id].send(self._serialize(opcode, req_id, message))
+        self._publish(peer_id, self._serialize(opcode, req_id, message))
 
     @staticmethod
     def _serialize(opcode: int, req_id: int, message=None) -> bytes:
@@ -194,12 +209,13 @@ class EofBarrier:
                         peer_id=payload,
                         opcode=message_protocol.OPCODE_OK,
                         req_id=req_id,
-                        message=self._state(req_id).articles_recv,
+                        message=[self.instance_id, self._state(req_id).articles_recv],
                     )
                 elif opcode == message_protocol.OPCODE_OK:
                     state = self._states.get(req_id)
                     if state is not None:
-                        state.peer_counts.append(payload)
+                        peer_id, count = payload
+                        state.peer_counts[peer_id] = max(state.peer_counts.get(peer_id, 0), count)
                         done = self._evaluate(req_id)
                 elif opcode == message_protocol.OPCODE_COMMIT:
                     logging.info("req_id=%s: COMMIT received", req_id)

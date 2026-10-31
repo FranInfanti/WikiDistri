@@ -6,7 +6,7 @@ import threading
 
 from datetime import datetime
 from stopwords import STOPWORDS
-from common import middleware, message_protocol, hashing, eof
+from common import middleware, message_protocol, hashing, eof, rabbitmq
 
 
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
@@ -45,22 +45,17 @@ class WordReader:
  
         self.is_running = True
 
-        self.send_lock = threading.Lock()
-
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST, queue_name=INPUT_QUEUE
         )
-        self.sum_words_queues = [
-            middleware.MessageMiddlewareQueueRabbitMQ(
-                host=MOM_HOST, queue_name=f"{SUM_WORDS_QUEUE_PREFIX}_{i}"
-            )
-            for i in range(SUM_WORDS_COUNT)
+
+        self.sum_words_queue_names = [
+            f"{SUM_WORDS_QUEUE_PREFIX}_{i}" for i in range(SUM_WORDS_COUNT)
         ]
-        self.join_queue = middleware.MessageMiddlewareQueueRabbitMQ(
-            host=MOM_HOST, queue_name=JOIN_QUEUE
-        )
-        self.sum_amount_queue = middleware.MessageMiddlewareQueueRabbitMQ(
-            host=MOM_HOST, queue_name=SUM_AMOUNT_QUEUE
+
+        self.publisher = rabbitmq.RabbitPublisher(
+            host=MOM_HOST,
+            queues=[*self.sum_words_queue_names, JOIN_QUEUE, SUM_AMOUNT_QUEUE],
         )
 
         self.barrier = eof.EofBarrier(
@@ -85,8 +80,7 @@ class WordReader:
 
     def process_message(self, message, ack, nack):
         try:
-            logging.info(f"req_id= {message}")        
-            opcode, req_id, _batches, payload = message_protocol.internal.deserialize(message) # Despues a ver si funcionaria con batches
+            opcode, req_id, _batches, payload = message_protocol.internal.deserialize(message)
  
             if opcode == message_protocol.OPCODE_DATA:
                 self._handle_articles(req_id, payload)
@@ -106,7 +100,6 @@ class WordReader:
             nack()
  
     def _handle_articles(self, req_id: int, articles: list[list]):
-        # shard -> {word: [en_count, fr_count]}
         words_by_shard: dict[int, dict[str, list[int]]] = {}
         join_batch = []
         amount_batch = []
@@ -131,7 +124,7 @@ class WordReader:
  
         en_count, fr_count = counts
         for word in set(words):
-            shard_words = words_by_shard.setdefault(hashing.shard_for(req_id, word), {})
+            shard_words = words_by_shard.setdefault(hashing.shard_for(SUM_WORDS_COUNT , req_id, word), {})
             entry = shard_words.setdefault(word, [0, 0])
             entry[0] += en_count
             entry[1] += fr_count
@@ -148,63 +141,42 @@ class WordReader:
         else:
             amount_batch.append([amount])
 
-    def _send_unique_words(self, req_id: int, words_by_shard: dict):
-        with self.send_lock:
-            for shard, shard_words in words_by_shard.items():
-                message = [[word, en, fr] for word, (en, fr) in shard_words.items()]
-                self.sum_words_queues[shard].send(
-                    message_protocol.internal.serialize(
-                        opcode=message_protocol.OPCODE_DATA,
-                        req_id=req_id,
-                        batches=len(message),
-                        message=message,
-                    )
-                )
+    def _send_unique_words(self, req_id, words_by_shard):
+        for shard, shard_words in words_by_shard.items():
+            message = [[word, en, fr] for word, (en, fr) in shard_words.items()]
+            self.publisher.publish_queue(
+                self.sum_words_queue_names[shard],
+                message_protocol.internal.serialize(
+                    opcode=message_protocol.OPCODE_DATA,
+                    req_id=req_id, batches=len(message), message=message,
+                ),
+            )
 
+    def _send_word_amounts(self, req_id, join_batch, amount_batch):
+        if join_batch:
+            self.publisher.publish_queue(
+                JOIN_QUEUE,
+                message_protocol.internal.serialize(
+                    opcode=message_protocol.OPCODE_DATA,
+                    req_id=req_id, batches=len(join_batch), message=join_batch,
+                ),
+            )
+        if amount_batch:
+            self.publisher.publish_queue(
+                SUM_AMOUNT_QUEUE,
+                message_protocol.internal.serialize(
+                    opcode=message_protocol.OPCODE_DATA,
+                    req_id=req_id, batches=len(amount_batch), message=amount_batch,
+                ),
+            )
 
-
-    def _send_word_amounts(self, req_id: int, join_batch: list, amount_batch: list):
-        with self.send_lock:
-            if join_batch:
-                self.join_queue.send(
-                    message_protocol.internal.serialize(
-                        opcode=message_protocol.OPCODE_DATA,
-                        req_id=req_id,
-                        batches=len(join_batch),
-                        message=join_batch,
-                    )
-                )
-                logging.debug("req_id=%s -> %s: %s articles", req_id, JOIN_QUEUE, len(join_batch))
- 
-            if amount_batch:
-                self.sum_amount_queue.send(
-                    message_protocol.internal.serialize(
-                        opcode=message_protocol.OPCODE_DATA,
-                        req_id=req_id,
-                        batches=len(amount_batch),
-                        message=amount_batch,
-                    )
-                )
-                logging.debug("req_id=%s -> %s: %s articles", req_id, SUM_AMOUNT_QUEUE, len(amount_batch))
-
-
-    def _forward_eof(self, req_id: int):
-        logging.info(f"All articles received for req_id: {req_id}. Forwarding EOF to next stages...")
- 
-        # TODO: define the EOF payload for sum and job 5 
-        eof = message_protocol.internal.serialize(
-            opcode=message_protocol.OPCODE_EOF,
-            req_id=req_id,
+    def _forward_eof(self, req_id):
+        eof_message = message_protocol.internal.serialize(
+            opcode=message_protocol.OPCODE_EOF, req_id=req_id,
         )
- 
-        with self.send_lock:
-            for i, queue in enumerate(self.sum_words_queues):
-                queue.send(eof)
-                logging.info("req_id=%s: EOF -> %s_%s", req_id, SUM_WORDS_QUEUE_PREFIX, i)
-            self.join_queue.send(eof)
-            logging.info("req_id=%s: EOF -> %s", req_id, JOIN_QUEUE)
-            self.sum_amount_queue.send(eof)
-            logging.info("req_id=%s: EOF -> %s", req_id, SUM_AMOUNT_QUEUE)
+        for name in [*self.sum_words_queue_names, JOIN_QUEUE, SUM_AMOUNT_QUEUE]:
+            self.publisher.publish_queue(name, eof_message)
+            logging.info("req_id=%s: EOF -> %s", req_id, name)
 
     def start(self):
         try:
@@ -220,13 +192,12 @@ class WordReader:
     def _close(self):
         logging.info("Closing queues...")
         self.barrier.close()
- 
-        queues = [self.input_queue, self.join_queue, self.sum_amount_queue, *self.sum_words_queues]
-        for queue in queues:
-            try:
-                queue.close()
-            except Exception:
-                logging.exception("Error closing queue")
+        self.publisher.stop()
+        
+        try:
+            self.input_queue.close()
+        except Exception:
+            logging.exception("Error closing queue")
  
 def main():
     logging.basicConfig(

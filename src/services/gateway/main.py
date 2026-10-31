@@ -1,4 +1,6 @@
+import io
 import os
+import csv
 import time
 import signal
 import socket
@@ -8,11 +10,7 @@ import functools
 import threading
 import itertools
 
-from common import entity, middleware, message_protocol
-
-_TIMEOUT = 5.0
-_HANDLE_CLIENT_REQUEST_PREFIX = "Uploader"
-_HANDLE_CLIENT_RESPONSE_PREFIX = "Consumer"
+from common import entity, middleware, message_protocol, rabbitmq
 
 HOST = os.environ["HOST"]
 PORT = int(os.environ["PORT"])
@@ -21,8 +19,8 @@ JOBS = int(os.environ["JOBS"])
 MOM_HOST = os.environ["MOM_HOST"]
 BATCH_SIZE = int(os.environ["BATCH_SIZE"])
 GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
-FILTER_OUTPUT_QUEUE = os.environ["FILTER_OUTPUT_QUEUE"]
-WORD_READER_OUTPUT_QUEUE = os.environ["WORD_READER_OUTPUT_QUEUE"]
+FILTER_QUEUE = os.environ["FILTER_QUEUE"]
+WORD_READER_QUEUE = os.environ["WORD_READER_QUEUE"]
 
 def job_format(job_id: int, messages: list):
     batch = []
@@ -34,11 +32,13 @@ def job_format(job_id: int, messages: list):
                 f"{job_id},{url},{date_modified}"
             )
         elif job_id == 2:
-            # [..., [ [name_0, url_0, image_0], ..., [name_n, url_n, image_n] ]]
-            name, url, image_bytes = message
-            batch.append(
-                f"{job_id},{name},{url},{image_bytes}"
+            # [..., [name, article_url, image_url, image_content_type, image_bytes]]
+            name, url, image_url, image_content_type, b64_image_bytes = message
+            row = io.StringIO(newline="")
+            csv.writer(row, lineterminator="\n").writerow(
+                [job_id, name, url, image_url or "", image_content_type or "", b64_image_bytes or ""]
             )
+            batch.append(row.getvalue()[:-1])
         elif job_id == 3:
             # [..., [ word_0, ..., word_n ]]
             word = message
@@ -63,18 +63,16 @@ def job_format(job_id: int, messages: list):
     return message_protocol.batching.batch_messages(batch)
 
 class Gateway:
+    _TIMEOUT = 5.0
+    _HANDLE_CLIENT_REQUEST_PREFIX = "Uploader"
+    _HANDLE_CLIENT_RESPONSE_PREFIX = "Consumer"
 
     def __init__(self, host: str, port: int):
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
-        self.filter_output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
+        self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
-            queue_name=FILTER_OUTPUT_QUEUE
-        )
-
-        self.word_reader_output_queue = middleware.MessageMiddlewareQueueRabbitMQ(
-            host=MOM_HOST,
-            queue_name=WORD_READER_OUTPUT_QUEUE
+            queues=[FILTER_QUEUE, WORD_READER_QUEUE]
         )
 
         self.input_queues = {
@@ -90,18 +88,13 @@ class Gateway:
         self.server_host = host
         self.server_port = port
         self.req_counter = itertools.count(1)
-
-        self.filter_output_queue_lock = threading.Lock()
-        self.word_reader_output_queue_lock = threading.Lock()
-
         self.active_threads = {}
         self.active_threads_lock = threading.Lock()
-
         self.clients_requests = {}
         self.clients_requests_lock = threading.Lock()
 
     def _sigterm_handler(self, _signum, _frame):
-        logging.info("SIGTERM signal received, setting shutdown flag and closing listener")
+        logging.info("SIGTERM signal received, setting shutdown flag")
         self.is_running = False
 
         if self.server_socket:
@@ -111,7 +104,7 @@ class Gateway:
                 pass
 
     def _wait_for_threads(self):
-        deadline = time.time() + _TIMEOUT
+        deadline = time.time() + self._TIMEOUT
 
         for input_queue in self.input_queues.values():
             input_queue.stop_consuming_threadsafe()
@@ -119,7 +112,7 @@ class Gateway:
         with self.active_threads_lock:
             active_threads = list(self.active_threads.values())
 
-        logging.info(f"Waiting up to {_TIMEOUT} seconds for {len(active_threads)} active threads to stop")
+        logging.info(f"Waiting up to {self._TIMEOUT} seconds for {len(active_threads)} active threads to stop")
         for thread in active_threads:
             remaining = max(0.0, deadline - time.time())
             if remaining <= 0:
@@ -129,31 +122,34 @@ class Gateway:
         remaining_threads = [thread.name for thread in active_threads if thread.is_alive()]
         if remaining_threads:
             logging.warning(f"Shutdown timed out with still {len(remaining_threads)} active threads")
-        else:
-            logging.info("All active threads stopped; closing client connections")
 
         with self.clients_requests_lock:
             for client in self.clients_requests.values():
                 client.close()
 
-    def _publish_eof(self, req_id: int, articles_sent: int):
-        with self.filter_output_queue_lock:
-            self.filter_output_queue.send(
-                message_protocol.internal.serialize(
-                    opcode=message_protocol.OPCODE_EOF,
-                    req_id=req_id,
-                    message=articles_sent
-                )
-            )
+        if self.publisher.stop(timeout=max(0.0, deadline - time.time())):
+            logging.warning(f"Shutdown timed out with still one active thread")
+        else:
+            logging.info("All active threads stopped")
 
-        with self.word_reader_output_queue_lock:
-            self.word_reader_output_queue.send(
-                message_protocol.internal.serialize(
-                    opcode=message_protocol.OPCODE_EOF,
-                    req_id=req_id,
-                    message=articles_sent
-                )
+    def _publish_eof(self, req_id: int, articles_sent: int):
+        self.publisher.publish_queue(
+            queue=FILTER_QUEUE,
+            message=message_protocol.internal.serialize(
+                opcode=message_protocol.OPCODE_EOF,
+                req_id=req_id,
+                message=articles_sent
             )
+        )
+
+        self.publisher.publish_queue(
+            queue=WORD_READER_QUEUE,
+            message=message_protocol.internal.serialize(
+                opcode=message_protocol.OPCODE_EOF,
+                req_id=req_id,
+                message=articles_sent
+            )
+        )
 
     def _publish_data(self, req_id: int, batches: int, message: bytes):
         batch_filter = []
@@ -165,10 +161,10 @@ class Gateway:
         for line in message_protocol.batching.unbatch_messages(message, batches):
             wikipedia_article = entity.WikipediaArticle.from_csv(line)
 
-            filter_list = wikipedia_article.to_list(
+            filter_message = wikipedia_article.to_list(
                 name=True, url=True, image=True, in_language=True, date_modified=True, sections=True
             )
-            word_reader_list = wikipedia_article.to_list(
+            reader_message = wikipedia_article.to_list(
                 abstract=True, url=True, date_modified=True, in_language=True,
             )
 
@@ -176,21 +172,20 @@ class Gateway:
                 opcode=message_protocol.OPCODE_DATA,
                 req_id=req_id,
                 batches=len(batch_filter) + 1,
-                message=[*batch_filter, filter_list]
+                message=[*batch_filter, filter_message]
             )
             if batch_filter and (
                 len(batch_filter) >= BATCH_SIZE
                 or len(candidate_filter_batch) > message_protocol.MAX_RABBITMQ_MESSAGE_SIZE
             ):
-                with self.filter_output_queue_lock:
-                    self.filter_output_queue.send(serialized_filter_batch)
+                self.publisher.publish_queue(queue=FILTER_QUEUE, message=serialized_filter_batch)
 
                 batch_filter = []
                 candidate_filter_batch = message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
                     req_id=req_id,
                     batches=1,
-                    message=[filter_list]
+                    message=[filter_message]
                 )
 
             if len(candidate_filter_batch) > message_protocol.MAX_RABBITMQ_MESSAGE_SIZE:
@@ -199,28 +194,27 @@ class Gateway:
                     f"RabbitMQ's {message_protocol.MAX_RABBITMQ_MESSAGE_SIZE}-byte limit"
                 )
 
-            batch_filter.append(filter_list)
+            batch_filter.append(filter_message)
             serialized_filter_batch = candidate_filter_batch
 
             candidate_word_reader_batch = message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_DATA,
                 req_id=req_id,
                 batches=len(batch_word_reader) + 1,
-                message=[*batch_word_reader, word_reader_list]
+                message=[*batch_word_reader, reader_message]
             )
             if batch_word_reader and (
                 len(batch_word_reader) >= BATCH_SIZE
                 or len(candidate_word_reader_batch) > message_protocol.MAX_RABBITMQ_MESSAGE_SIZE
             ):
-                with self.word_reader_output_queue_lock:
-                    self.word_reader_output_queue.send(serialized_word_reader_batch)
+                self.publisher.publish_queue(queue=WORD_READER_QUEUE, message=serialized_word_reader_batch)
 
                 batch_word_reader = []
                 candidate_word_reader_batch = message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
                     req_id=req_id,
                     batches=1,
-                    message=[word_reader_list]
+                    message=[reader_message]
                 )
 
             if len(candidate_word_reader_batch) > message_protocol.MAX_RABBITMQ_MESSAGE_SIZE:
@@ -229,16 +223,14 @@ class Gateway:
                     f"RabbitMQ's {message_protocol.MAX_RABBITMQ_MESSAGE_SIZE}-byte limit"
                 )
 
-            batch_word_reader.append(word_reader_list)
+            batch_word_reader.append(reader_message)
             serialized_word_reader_batch = candidate_word_reader_batch
 
         if batch_filter:
-            with self.filter_output_queue_lock:
-                self.filter_output_queue.send(serialized_filter_batch)
+            self.publisher.publish_queue(queue=FILTER_QUEUE, message=serialized_filter_batch)
 
         if batch_word_reader:
-            with self.word_reader_output_queue_lock:
-                self.word_reader_output_queue.send(serialized_word_reader_batch)
+            self.publisher.publish_queue(queue=WORD_READER_QUEUE, message=serialized_word_reader_batch)
 
     def _upload(self, req_id: int, client_req: client.Client):
         logging.info(f"Started upload for req_id={req_id}")
@@ -268,7 +260,7 @@ class Gateway:
                 self.clients_requests.pop(req_id, None)
         finally:
             with self.active_threads_lock:
-                del self.active_threads[f"{_HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"]
+                del self.active_threads[f"{self._HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"]
 
     def _download(self, job_id, message, ack, nack):
         req_id = None
@@ -330,18 +322,21 @@ class Gateway:
         req_id = next(self.req_counter)
         logging.info(f"Accepted client connection; assigned req_id={req_id}")
 
-        client_req = client.Client(client_socket, JOBS)
+        client_req = client.Client(
+            client_socket=client_socket,
+            jobs=JOBS
+        )
         thread = threading.Thread(
             target=self._upload,
             args=(req_id, client_req),
-            name=f"{_HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"
+            name=f"{self._HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"
         )
 
         with self.clients_requests_lock:
             self.clients_requests[req_id] = client_req
 
         with self.active_threads_lock:
-            self.active_threads[f"{_HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"] = thread
+            self.active_threads[f"{self._HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"] = thread
 
         thread.start()
 
@@ -351,11 +346,11 @@ class Gateway:
             thread = threading.Thread(
                 target=queue.start_consuming,
                 args=(callback,),
-                name=f"{_HANDLE_CLIENT_RESPONSE_PREFIX}-{job_id}"
+                name=f"{self._HANDLE_CLIENT_RESPONSE_PREFIX}-{job_id}"
             )
 
             with self.active_threads_lock:
-                self.active_threads[f"{_HANDLE_CLIENT_RESPONSE_PREFIX}-{job_id}"] = thread
+                self.active_threads[f"{self._HANDLE_CLIENT_RESPONSE_PREFIX}-{job_id}"] = thread
 
             thread.start()
 
@@ -363,26 +358,22 @@ class Gateway:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
                 self.server_socket = server_socket
-
                 server_socket.bind((self.server_host, self.server_port))
                 server_socket.listen()
-                logging.info("Listening to connections")
 
+                logging.info("Listening to connections")
                 self._handle_client_response()
                 while self.is_running:
                     try:
                         client_socket, _ = server_socket.accept()
                     except OSError:
-                        if not self.is_running:
-                            break
-                        raise
+                        if self.is_running:
+                            raise
+                        logging.warning("Interrupted by the SIGTERM")
+                        return
                     self._handle_client_request(client_socket)
         finally:
             self._wait_for_threads()
-
-            self.filter_output_queue.close()
-            self.word_reader_output_queue.close()
-
             for input_queue in self.input_queues.values():
                 input_queue.close()
 
@@ -391,6 +382,7 @@ def main():
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(threadName)s: %(message)s"
     )
+    logging.getLogger("pika").propagate = False
     
     try:
         Gateway(HOST, PORT).start()
