@@ -89,6 +89,7 @@ def build_compose(
                 "dockerfile": "services/gateway/Dockerfile",
             },
             "container_name": "gateway",
+            "stop_grace_period": "30s",
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
@@ -116,6 +117,7 @@ def build_compose(
                 "dockerfile": "services/filter/Dockerfile",
             },
             "container_name": service_name,
+            "stop_grace_period": "30s",
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
@@ -140,6 +142,7 @@ def build_compose(
                 "dockerfile": "services/downloader/Dockerfile",
             },
             "container_name": service_name,
+            "stop_grace_period": "30s",
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
@@ -164,6 +167,7 @@ def build_compose(
                 "dockerfile": "services/reader/Dockerfile",
             },
             "container_name": service_name,
+            "stop_grace_period": "30s",
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
@@ -192,6 +196,7 @@ def build_compose(
                 "dockerfile": "services/sum_count/Dockerfile",
             },
             "container_name": service_name,
+            "stop_grace_period": "30s",
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
@@ -220,6 +225,7 @@ def build_compose(
                 "dockerfile": "services/join_top/Dockerfile",
             },
             "container_name": service_name,
+            "stop_grace_period": "30s",
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
@@ -243,6 +249,7 @@ def build_compose(
                 "dockerfile": "services/sum_amount/Dockerfile",
             },
             "container_name": service_name,
+            "stop_grace_period": "30s",
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
@@ -267,6 +274,7 @@ def build_compose(
                 "dockerfile": "services/average/Dockerfile",
             },
             "container_name": service_name,
+            "stop_grace_period": "30s",
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
@@ -291,6 +299,7 @@ def build_compose(
                 "dockerfile": "services/join_average/Dockerfile",
             },
             "container_name": service_name,
+            "stop_grace_period": "30s",
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
@@ -314,6 +323,7 @@ def build_compose(
                 "dockerfile": "src/services/client/Dockerfile",
             },
             "container_name": service_name,
+            "stop_grace_period": "30s",
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "INPUT_FILE": "/app/input/articles.csv",
@@ -349,7 +359,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--filters", type=positive_int, default=3, metavar="N")
     parser.add_argument("--word-readers", type=positive_int, default=4, metavar="N")
-    parser.add_argument("--image-downloaders", type=positive_int, default=1, metavar="N")
+    parser.add_argument("--image-downloaders", type=positive_int, default=3, metavar="N")
     parser.add_argument("--sum-counts", type=positive_int, default=4, metavar="N")
     parser.add_argument("--join-tops", type=positive_int, default=1, metavar="N")
     parser.add_argument("--sum-amounts", type=positive_int, default=3, metavar="N")

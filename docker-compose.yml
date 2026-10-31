@@ -37,6 +37,7 @@ services:
       context: ./src/
       dockerfile: services/gateway/Dockerfile
     container_name: gateway
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -58,6 +59,7 @@ services:
       context: ./src/
       dockerfile: services/filter/Dockerfile
     container_name: filter_0
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -76,6 +78,7 @@ services:
       context: ./src/
       dockerfile: services/filter/Dockerfile
     container_name: filter_1
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -94,6 +97,7 @@ services:
       context: ./src/
       dockerfile: services/filter/Dockerfile
     container_name: filter_2
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -112,13 +116,50 @@ services:
       context: ./src/
       dockerfile: services/downloader/Dockerfile
     container_name: image_downloader_0
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
       ID: '0'
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
-      IMAGE_DOWNLOADER_AMOUNT: '1'
+      IMAGE_DOWNLOADER_AMOUNT: '3'
+      IMAGE_DOWNLOADER_PREFIX: image_downloader
+      IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  image_downloader_1:
+    build:
+      context: ./src/
+      dockerfile: services/downloader/Dockerfile
+    container_name: image_downloader_1
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '1'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      IMAGE_DOWNLOADER_AMOUNT: '3'
+      IMAGE_DOWNLOADER_PREFIX: image_downloader
+      IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  image_downloader_2:
+    build:
+      context: ./src/
+      dockerfile: services/downloader/Dockerfile
+    container_name: image_downloader_2
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '2'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      IMAGE_DOWNLOADER_AMOUNT: '3'
       IMAGE_DOWNLOADER_PREFIX: image_downloader
       IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
     depends_on:
@@ -129,6 +170,7 @@ services:
       context: ./src/
       dockerfile: services/reader/Dockerfile
     container_name: word_reader_0
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -150,6 +192,7 @@ services:
       context: ./src/
       dockerfile: services/reader/Dockerfile
     container_name: word_reader_1
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -171,6 +214,7 @@ services:
       context: ./src/
       dockerfile: services/reader/Dockerfile
     container_name: word_reader_2
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -192,6 +236,7 @@ services:
       context: ./src/
       dockerfile: services/reader/Dockerfile
     container_name: word_reader_3
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -213,6 +258,7 @@ services:
       context: ./src/
       dockerfile: services/sum_count/Dockerfile
     container_name: sum_0
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -234,6 +280,7 @@ services:
       context: ./src/
       dockerfile: services/sum_count/Dockerfile
     container_name: sum_1
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -255,6 +302,7 @@ services:
       context: ./src/
       dockerfile: services/sum_count/Dockerfile
     container_name: sum_2
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -276,6 +324,7 @@ services:
       context: ./src/
       dockerfile: services/sum_count/Dockerfile
     container_name: sum_3
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -297,6 +346,7 @@ services:
       context: ./src/
       dockerfile: services/join_top/Dockerfile
     container_name: join_top_0
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -313,6 +363,7 @@ services:
       context: ./src/
       dockerfile: services/sum_amount/Dockerfile
     container_name: sum_amount_0
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -331,6 +382,7 @@ services:
       context: ./src/
       dockerfile: services/sum_amount/Dockerfile
     container_name: sum_amount_1
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -349,6 +401,7 @@ services:
       context: ./src/
       dockerfile: services/sum_amount/Dockerfile
     container_name: sum_amount_2
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -367,6 +420,7 @@ services:
       context: ./src/
       dockerfile: services/average/Dockerfile
     container_name: average_0
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -384,6 +438,7 @@ services:
       context: ./src/
       dockerfile: services/average/Dockerfile
     container_name: average_1
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -401,6 +456,7 @@ services:
       context: ./src/
       dockerfile: services/average/Dockerfile
     container_name: average_2
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -418,6 +474,7 @@ services:
       context: ./src/
       dockerfile: services/join_average/Dockerfile
     container_name: join_average_0
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -435,6 +492,7 @@ services:
       context: ./src/
       dockerfile: services/join_average/Dockerfile
     container_name: join_average_1
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -452,6 +510,7 @@ services:
       context: ./src/
       dockerfile: services/join_average/Dockerfile
     container_name: join_average_2
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       LOG_LEVEL: INFO
@@ -469,6 +528,7 @@ services:
       context: .
       dockerfile: src/services/client/Dockerfile
     container_name: client_0
+    stop_grace_period: 30s
     environment:
       PYTHONUNBUFFERED: '1'
       INPUT_FILE: /app/input/articles.csv
