@@ -76,6 +76,21 @@ class SumAmount:
 
         self.barrier.record_articles(req_id, len(entries))
 
+    def _flush(self, req_id: int):
+        with self.lock:
+            words, articles = self.partials.pop(req_id, [0, 0])
+
+        self.publisher.publish_queue(
+            self.average_queue_names[req_id % AVERAGE_COUNT],
+            message_protocol.internal.serialize(
+                opcode=message_protocol.OPCODE_DATA,
+                req_id=req_id,
+                batches=1,
+                message=[ID, words, articles],
+            ),
+        )
+        logging.info(f"req_id={req_id}: partial sent ({words} words, {articles} articles)")
+
     def _on_all_received(self, req_id: int, _sent_total: int = 0):
         self._flush(req_id)
 
@@ -111,6 +126,7 @@ def main():
         logging.exception("An unexpected error has occurred")
         return 2
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
