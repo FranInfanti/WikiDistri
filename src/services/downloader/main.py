@@ -35,60 +35,55 @@ class ImageDownloader():
     def __init__(self):
         signal.signal(signalnum=signal.SIGTERM, handler=self._sigterm_handler)
         
+        self.is_running = True
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST,
             queue_name=IMAGE_DOWNLOADER_QUEUE
         )
-        self.input_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
+        self.coordinator = rabbitmq.RabbitCoordinator(
+            id=ID,
             host=MOM_HOST,
-            exchange_name=IMAGE_DOWNLOADER_PREFIX,
-            routing_keys=[f"{IMAGE_DOWNLOADER_PREFIX}_{ID}"]
+            prefix=IMAGE_DOWNLOADER_PREFIX,
+            instances=IMAGE_DOWNLOADER_AMOUNT,
+            on_all_recv=self._on_recv_all
         )
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
             queues=[f"{GATEWAY_PREFIX}_2"],
-            exchanges={
-                i: IMAGE_DOWNLOADER_PREFIX
-                for i in range(IMAGE_DOWNLOADER_AMOUNT)
-                if i != ID
-            }
         )
-        self.is_running = True
-        self.exchange_consumer = None
-        self.message_tracker = {}
 
     def _sigterm_handler(self, _signum, _frame):
-        logging.info("SIGTERM signal received, setting shutdown flag")
+        logging.info("SIGTERM signal received, proceed to shutdown the service...")
         self.is_running = False
-
         try:
             self.input_queue.stop_consuming()
         except Exception:
-            logging.warning("Failed to stop the input queue consumer during shutdown", exc_info=True)
+            logging.warning("An error occurred while attempting to stop consumption from a queue")
 
-    def _wait_for_threads(self):
-        deadline = time.time() + self._TIMEOUT
+    def _close(self):
+        deadline = time.monotonic() + self._TIMEOUT
+        logging.info(f"Waiting up to {self._TIMEOUT} seconds for active threads to stop")
+
+        timed_out = []
+        components = (
+            ("coordinator", self.coordinator.stop),
+            ("publisher", self.publisher.stop),
+        )
+        for name, stop in components:
+            if stop(timeout=max(0.0, deadline - time.monotonic())):
+                timed_out.append(name)
 
         try:
-            self.input_exchange.stop_consuming_threadsafe()
+            self.input_queue.close()
         except Exception:
-            logging.warning("Failed to stop the input exchange consumer during shutdown", exc_info=True)
+            logging.warning("Failed to close the input queue", exc_info=True)
 
-        logging.info(f"Waiting up to {self._TIMEOUT} seconds for active threads to stop")
-        if self.exchange_consumer:
-            remaining = max(0.0, deadline - time.time())
-            if remaining > 0:
-                self.exchange_consumer.join(timeout=remaining)
-            if self.exchange_consumer.is_alive():
-                logging.warning(f"Shutdown timed out with still active threads")
-            self.input_exchange.close()
-
-        if self.publisher.stop(timeout=max(0.0, deadline - time.time())):
-            logging.warning(f"Shutdown timed out with still one active thread")
+        if timed_out:
+            logging.error("Shutdown timed out with active components: %s", ", ".join(timed_out))
         else:
-            logging.info("All active threads stopped")
+            logging.info("All resources have been released; goodbye")
 
-    def _download_image(self, req_id: int, _batches: int, messages: list):
+    def _download_image(self, req_id: int, _: int, messages: list):
         for message in messages:
             name, url, image = message
             image_bytes = None
@@ -121,143 +116,47 @@ class ImageDownloader():
                 )
             )
 
-            self.message_tracker.setdefault(req_id, entity.message_tracker.MessageTracker()).record_recv()
-        
-    def _process_eof(self, req_id: int, _: int, expected_messages: int):
-        logging.info(f"[{req_id}] - Receive the end of the images")
-        
-        tracker = self.message_tracker.setdefault(req_id, entity.message_tracker.MessageTracker())
-        tracker.record_expected(expected_messages)
+            self.coordinator.record_recv(req_id=req_id)
 
-        if IMAGE_DOWNLOADER_AMOUNT == 1:
-            if tracker.all_recv():
-                logging.info(f"[{req_id}] - All of the images have been downloaded !!!")
-                self.publisher.publish_queue(
-                    queue=f"{GATEWAY_PREFIX}_2",
-                    message=message_protocol.internal.serialize(
-                        opcode=message_protocol.OPCODE_EOF,
-                        req_id=req_id
-                    )
-                )
-            else:
-                logging.error(
-                    f"[%s] - Article count mismatch: expected %s, received %s",
-                    req_id,
-                    tracker.expected_messages,
-                    tracker.recv_messages
-                )
+    def _on_recv_all(self, req_id: int, _: list):
+        logging.debug(f"Sending OPCODE_EOF message for req_id={req_id}")
 
-            del self.message_tracker[req_id]
-            return
-
-        self.publisher.publish_exchange(
+        self.publisher.publish_queue(
+            queue=f"{GATEWAY_PREFIX}_2",
             message=message_protocol.internal.serialize(
-                opcode=message_protocol.OPCODE_PREPARE,
-                req_id=req_id,
-                batches=1,
-                message=ID
+                opcode=message_protocol.OPCODE_EOF,
+                req_id=req_id
             )
         )
 
-    def _process_prepare(self, req_id: int, _: int, exchange_id: int):
-        tracker = self.message_tracker.setdefault(req_id, entity.message_tracker.MessageTracker())
-        logging.info(
-            "[%s] - Send %s downloaded images to filter_%s",
-            req_id,
-            tracker.recv_messages,
-            exchange_id
-        )
-
-        self.publisher.publish_exchange(
-            message=message_protocol.internal.serialize(
-                opcode=message_protocol.OPCODE_OK,
-                req_id=req_id,
-                batches=1,
-                message=tracker.recv_messages
-            ),
-            exchange_id=exchange_id
-        )
-
-    def _process_ok(self, req_id: int, _: int, articles_recv: int):
-        tracker = self.message_tracker.setdefault(req_id, entity.message_tracker.MessageTracker())
-        tracker.record_peer(articles_recv)
-
-        if tracker.all_peers(IMAGE_DOWNLOADER_AMOUNT - 1):
-            if tracker.all_recv():
-                logging.info(f"[{req_id}] - All of the images have been downloaded !!!")
-
-                self.publisher.publish_exchange(
-                    message=message_protocol.internal.serialize(
-                        opcode=message_protocol.OPCODE_COMMIT,
-                        req_id=req_id
-                    )
-                )
-
-                self.publisher.publish_queue(
-                    queue=f"{GATEWAY_PREFIX}_2",
-                    message=message_protocol.internal.serialize(
-                        opcode=message_protocol.OPCODE_EOF,
-                        req_id=req_id
-                    )
-                )
-
-                del self.requests_states[req_id]
-            else:
-                logging.info(f"[{req_id}] - There are still images that have not been downloaded")
-                
-                tracker.reset_peers()
-                self.publisher.publish_exchange(
-                    message=message_protocol.internal.serialize(
-                        opcode=message_protocol.OPCODE_PREPARE,
-                        req_id=req_id,
-                        batches=1,
-                        message=ID
-                    )
-                )
-
-    def _delete_client(self, req_id: int, *_):
-        logging.info(f"[{req_id}] - Eliminating the client")
-        self.message_tracker.pop(req_id, None)
-
-    def _recv_message(self, message, ack, nack):
+    def _process_message(self, message, ack, nack):
         try:
             opcode, *args = message_protocol.internal.deserialize(message)
 
             if opcode == message_protocol.OPCODE_DATA:
                 self._download_image(*args)
             elif opcode == message_protocol.OPCODE_EOF:
-                self._process_eof(*args)
-            elif opcode == message_protocol.OPCODE_PREPARE:
-                self._process_prepare(*args)
-            elif opcode == message_protocol.OPCODE_OK:
-                self._process_ok(*args)
-            elif opcode == message_protocol.OPCODE_COMMIT:
-                self._delete_client(*args)
+                req_id, _, expected_messages = args
+                self.coordinator.on_eof(req_id=req_id, expected_messages=expected_messages)
             else:
-                logging.warning(f"Unexpected opcode={opcode}")
+                logging.warning(f"Unexpected OPCODE={opcode} received")
             ack()
         except:
-            logging.exception("Unexpected error")
+            logging.exception("An error occured while processing a message")
             nack()
         
     def start(self):
         try:
-            self.exchange_consumer = threading.Thread(
-                target=self.input_exchange.start_consuming,
-                args=(self._recv_message,)
-            )
-            self.exchange_consumer.start()
-
-            logging.info("Waiting to receive messages")
-            self.input_queue.start_consuming(self._recv_message)
+            logging.info("Waiting to receive messages...")
+            self.coordinator.start()
+            self.input_queue.start_consuming(self._process_message)
         except Exception:
             if self.is_running:
-                logging.exception("An exception has occured")
+                logging.critical(f"An error has occurred in the service")
                 raise
-            logging.warning("Interrupted by the SIGTERM")
+            logging.debug("Interrupted by the SIGTERM signal")
         finally:
-            self.input_queue.close()
-            self._wait_for_threads()
+            self._close()
 
 def main():
     logging.basicConfig(
@@ -265,7 +164,6 @@ def main():
         format="%(asctime)s [%(levelname)s] %(threadName)s: %(message)s"
     )
     logging.getLogger("pika").propagate = False
-
     try:
         ImageDownloader().start()
     except Exception:
@@ -273,4 +171,4 @@ def main():
     return 0
 
 if __name__ == "__main__":
-    main()
+    SystemExit(main())

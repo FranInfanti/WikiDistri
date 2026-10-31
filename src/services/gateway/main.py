@@ -207,7 +207,6 @@ class Gateway:
                 len(batch_word_reader) >= BATCH_SIZE
                 or len(candidate_word_reader_batch) > message_protocol.MAX_RABBITMQ_MESSAGE_SIZE
             ):
-                logging.info("Alani no anda una mierda")
                 self.publisher.publish_queue(queue=WORD_READER_QUEUE, message=serialized_word_reader_batch)
 
                 batch_word_reader = []
