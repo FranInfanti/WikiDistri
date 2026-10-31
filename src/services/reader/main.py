@@ -24,7 +24,7 @@ SUM_AMOUNT_QUEUE = os.environ["SUM_AMOUNT_QUEUE"]
 
 CUTOFF_YEAR = 2021
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
-WORD_RE = re.compile(r"\w+", re.UNICODE)
+WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 
 
 def tokenize(abstract: str, language: str | None) -> list[str]:
