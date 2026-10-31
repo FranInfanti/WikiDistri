@@ -418,11 +418,11 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-  join_0:
+  join_average_0:
     build:
       context: ./src/
       dockerfile: services/join_average/Dockerfile
-    container_name: join_0
+    container_name: join_average_0
     environment:
       PYTHONUNBUFFERED: '1'
       MOM_HOST: rabbitmq
@@ -434,11 +434,11 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-  join_1:
+  join_average_1:
     build:
       context: ./src/
       dockerfile: services/join_average/Dockerfile
-    container_name: join_1
+    container_name: join_average_1
     environment:
       PYTHONUNBUFFERED: '1'
       MOM_HOST: rabbitmq
@@ -450,11 +450,11 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-  join_2:
+  join_average_2:
     build:
       context: ./src/
       dockerfile: services/join_average/Dockerfile
-    container_name: join_2
+    container_name: join_average_2
     environment:
       PYTHONUNBUFFERED: '1'
       MOM_HOST: rabbitmq

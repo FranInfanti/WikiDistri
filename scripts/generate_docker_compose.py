@@ -23,6 +23,9 @@ def build_compose(
     word_readers: int,
     sum_counts: int,
     join_tops: int,
+    sum_amounts: int,
+    averages: int,
+    join_averages: int,
 ) -> str:
     counts = {
         "filters": filters,
@@ -31,6 +34,9 @@ def build_compose(
         "word_readers": word_readers,
         "sum_counts": sum_counts,
         "join_tops": join_tops,
+        "sum_amounts": sum_amounts,
+        "averages": averages,
+        "join_averages": join_averages,
     }
 
     for name, count in counts.items():
@@ -84,7 +90,7 @@ def build_compose(
                 "PYTHONUNBUFFERED": "1",
                 "HOST": "gateway",
                 "PORT": "5000",
-                "JOBS": "4",
+                "JOBS": "5",
                 "BATCH_SIZE": "50",
                 "MOM_HOST": "rabbitmq",
                 "GATEWAY_PREFIX": "gateway",
@@ -203,6 +209,7 @@ def build_compose(
                 "SUM_WORDS_QUEUE_PREFIX": "sum_words_queue",
                 "SUM_WORDS_COUNT": str(sum_counts),
                 "JOIN_QUEUE": "join_queue",
+                "JOIN_COUNT": str(join_averages),
                 "SUM_AMOUNT_QUEUE": "sum_amount_queue",
             },
             "depends_on": {
@@ -257,6 +264,74 @@ def build_compose(
             },
         }
 
+    for sum_amount_id in range(sum_amounts):
+        service_name = f"sum_amount_{sum_amount_id}"
+
+        services[service_name] = {
+            "build": {
+                "context": "./src/",
+                "dockerfile": "services/sum_amount/Dockerfile",
+            },
+            "container_name": service_name,
+            "environment": {
+                "PYTHONUNBUFFERED": "1",
+                "MOM_HOST": "rabbitmq",
+                "ID": str(sum_amount_id),
+                "SUM_AMOUNT_QUEUE": "sum_amount_queue",
+                "SUM_AMOUNT_PREFIX": "sum_amount",
+                "SUM_AMOUNT_COUNT": str(sum_amounts),
+                "AVERAGE_QUEUE": "average_queue",
+                "AVERAGE_COUNT": str(averages),
+            },
+            "depends_on": {
+                "rabbitmq": {"condition": "service_healthy"},
+            },
+        }
+    for average_id in range(averages):
+        service_name = f"average_{average_id}"
+
+        services[service_name] = {
+            "build": {
+                "context": "./src/",
+                "dockerfile": "services/average/Dockerfile",
+            },
+            "container_name": service_name,
+            "environment": {
+                "PYTHONUNBUFFERED": "1",
+                "MOM_HOST": "rabbitmq",
+                "ID": str(average_id),
+                "AVERAGE_QUEUE": "average_queue",
+                "SUM_AMOUNT_COUNT": str(sum_amounts),
+                "JOIN_AVERAGE_QUEUE": "join_average_queue",
+                "JOIN_COUNT": str(join_averages),
+            },
+            "depends_on": {
+                "rabbitmq": {"condition": "service_healthy"},
+            },
+        }
+    
+    for join_average_id in range(join_averages):
+        service_name = f"join_average_{join_average_id}"
+
+        services[service_name] = {
+            "build": {
+                "context": "./src/",
+                "dockerfile": "services/join_average/Dockerfile",
+            },
+            "container_name": service_name,
+            "environment": {
+                "PYTHONUNBUFFERED": "1",
+                "MOM_HOST": "rabbitmq",
+                "ID": str(join_average_id),
+                "JOIN_QUEUE": "join_queue",
+                "JOIN_AVERAGE_QUEUE": "join_average_queue",
+                "GATEWAY_PREFIX": "gateway",
+                "CHUNK_SIZE": "1000",
+            },
+            "depends_on": {
+                "rabbitmq": {"condition": "service_healthy"},
+            },
+        }
     compose = {
         "services": services,
         "volumes": {
@@ -311,6 +386,27 @@ def main(argv: list[str] | None = None) -> int:
         metavar="N",
     )
 
+    parser.add_argument(
+        "--sum-amounts",
+        type=positive_int,
+        default=3,
+        metavar="N",
+    )
+
+    parser.add_argument(
+        "--averages",
+        type=positive_int,
+        default=3,
+        metavar="N",
+    )
+
+    parser.add_argument(
+        "--join-averages",
+        type=positive_int,
+        default=3,
+        metavar="N",
+    )
+
     args = parser.parse_args(argv)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -322,6 +418,9 @@ def main(argv: list[str] | None = None) -> int:
             word_readers=args.word_readers,
             sum_counts=args.sum_counts,
             join_tops=args.join_tops,
+            sum_amounts=args.sum_amounts,
+            averages=args.averages,
+            join_averages=args.join_averages,
         ),
         encoding="utf-8",
     )
