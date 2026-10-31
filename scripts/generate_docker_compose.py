@@ -19,25 +19,28 @@ def positive_int(value: str) -> int:
 def build_compose(
     filters: int,
     image_downloaders: int,
-    clients: int,
     word_readers: int,
     sum_counts: int,
     join_tops: int,
     sum_amounts: int,
     averages: int,
     join_averages: int,
+    clients: int,
+    debug: bool
 ) -> str:
     counts = {
         "filters": filters,
         "image_downloaders": image_downloaders,
-        "clients": clients,
         "word_readers": word_readers,
         "sum_counts": sum_counts,
         "join_tops": join_tops,
         "sum_amounts": sum_amounts,
         "averages": averages,
         "join_averages": join_averages,
+        "clients": clients,
     }
+
+    log_level = "INFO" if not debug else "DEBUG"
 
     for name, count in counts.items():
         if count < 1:
@@ -88,6 +91,7 @@ def build_compose(
             "container_name": "gateway",
             "environment": {
                 "PYTHONUNBUFFERED": "1",
+                "LOG_LEVEL": log_level,
                 "HOST": "gateway",
                 "PORT": "5000",
                 "JOBS": "5",
@@ -101,25 +105,7 @@ def build_compose(
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
             },
-        },
-        "download": {
-            "build": {
-                "context": ".",
-                "dockerfile": "src/services/client/Dockerfile",
-            },
-            "container_name": "download",
-            "profiles": ["data-setup"],
-            "entrypoint": ["python", "scripts/download_dataset.py"],
-            "environment": {
-                "FILES_PER_LANGUAGE": "${FILES_PER_LANGUAGE:-5}",
-                "WIKI_LANGUAGES": "${WIKI_LANGUAGES:-en,fr}",
-                "MAX_ROWS": "${MAX_ROWS:-0}",
-            },
-            "volumes": [
-                "./input:/app/input",
-                "kaggle-cache:/cache/kagglehub",
-            ],
-        },
+        }
     }
 
     for filter_id in range(filters):
@@ -132,6 +118,7 @@ def build_compose(
             "container_name": service_name,
             "environment": {
                 "PYTHONUNBUFFERED": "1",
+                "LOG_LEVEL": log_level,
                 "ID": str(filter_id),
                 "MOM_HOST": "rabbitmq",
                 "GATEWAY_PREFIX": "gateway",
@@ -155,12 +142,164 @@ def build_compose(
             "container_name": service_name,
             "environment": {
                 "PYTHONUNBUFFERED": "1",
+                "LOG_LEVEL": log_level,
                 "ID": str(downloader_id),
                 "MOM_HOST": "rabbitmq",
                 "GATEWAY_PREFIX": "gateway",
                 "IMAGE_DOWNLOADER_AMOUNT": str(image_downloaders),
                 "IMAGE_DOWNLOADER_PREFIX": "image_downloader",
                 "IMAGE_DOWNLOADER_QUEUE": "image_downloader_queue",
+            },
+            "depends_on": {
+                "rabbitmq": {"condition": "service_healthy"},
+            },
+        }
+
+    for reader_id in range(word_readers):
+        service_name = f"word_reader_{reader_id}"
+
+        services[service_name] = {
+            "build": {
+                "context": "./src/",
+                "dockerfile": "services/reader/Dockerfile",
+            },
+            "container_name": service_name,
+            "environment": {
+                "PYTHONUNBUFFERED": "1",
+                "LOG_LEVEL": log_level,
+                "ID": str(reader_id),
+                "MOM_HOST": "rabbitmq",
+                "WORD_READER_AMOUNT": str(word_readers),
+                "WORD_READER_PREFIX": "word_reader",
+                "WORD_READER_QUEUE": "word_reader_queue",
+                "SUM_WORDS_COUNT": str(sum_counts),
+                "SUM_WORDS_QUEUE_PREFIX": "sum_words_queue",
+                "SUM_AMOUNT_QUEUE": "sum_amount_queue",
+                "JOIN_COUNT": str(join_averages),
+                "JOIN_QUEUE": "join_queue",
+            },
+            "depends_on": {
+                "rabbitmq": {"condition": "service_healthy"},
+            },
+        }
+
+    for sum_id in range(sum_counts):
+        service_name = f"sum_{sum_id}"
+
+        services[service_name] = {
+            "build": {
+                "context": "./src/",
+                "dockerfile": "services/sum_count/Dockerfile",
+            },
+            "container_name": service_name,
+            "environment": {
+                "PYTHONUNBUFFERED": "1",
+                "LOG_LEVEL": log_level,
+                "MOM_HOST": "rabbitmq",
+                "SUM_WORDS_QUEUE_PREFIX": "sum_words_queue",
+                "SUM_WORDS_COUNT": str(sum_counts),
+                "SUM_COUNT_PREFIX": "sum_count",
+                "COORDINATOR_ID": "0",
+                "GATEWAY_PREFIX": "gateway",
+                "CHUNK_SIZE": "1000",
+                "JOIN_TOP_QUEUE": "join_top",
+                "JOIN_TOP_COUNT": "1",
+                "ID": str(sum_id),
+            },
+            "depends_on": {
+                "rabbitmq": {"condition": "service_healthy"},
+            },
+        }
+
+    for join_top_id in range(join_tops):
+        service_name = f"join_top_{join_top_id}"
+
+        services[service_name] = {
+            "build": {
+                "context": "./src/",
+                "dockerfile": "services/join_top/Dockerfile",
+            },
+            "container_name": service_name,
+            "environment": {
+                "PYTHONUNBUFFERED": "1",
+                "LOG_LEVEL": log_level,
+                "MOM_HOST": "rabbitmq",
+                "JOIN_TOP_QUEUE": "join_top",
+                "SUM_WORDS_COUNT": str(sum_counts),
+                "GATEWAY_PREFIX": "gateway",
+                "ID": str(join_top_id),
+            },
+            "depends_on": {
+                "rabbitmq": {"condition": "service_healthy"},
+            },
+        }
+
+    for sum_amount_id in range(sum_amounts):
+        service_name = f"sum_amount_{sum_amount_id}"
+
+        services[service_name] = {
+            "build": {
+                "context": "./src/",
+                "dockerfile": "services/sum_amount/Dockerfile",
+            },
+            "container_name": service_name,
+            "environment": {
+                "PYTHONUNBUFFERED": "1",
+                "LOG_LEVEL": log_level,
+                "MOM_HOST": "rabbitmq",
+                "ID": str(sum_amount_id),
+                "SUM_AMOUNT_QUEUE": "sum_amount_queue",
+                "SUM_AMOUNT_PREFIX": "sum_amount",
+                "SUM_AMOUNT_COUNT": str(sum_amounts),
+                "AVERAGE_QUEUE": "average_queue",
+                "AVERAGE_COUNT": str(averages),
+            },
+            "depends_on": {
+                "rabbitmq": {"condition": "service_healthy"},
+            },
+        }
+    for average_id in range(averages):
+        service_name = f"average_{average_id}"
+
+        services[service_name] = {
+            "build": {
+                "context": "./src/",
+                "dockerfile": "services/average/Dockerfile",
+            },
+            "container_name": service_name,
+            "environment": {
+                "PYTHONUNBUFFERED": "1",
+                "LOG_LEVEL": log_level,
+                "MOM_HOST": "rabbitmq",
+                "ID": str(average_id),
+                "AVERAGE_QUEUE": "average_queue",
+                "SUM_AMOUNT_COUNT": str(sum_amounts),
+                "JOIN_AVERAGE_QUEUE": "join_average_queue",
+                "JOIN_COUNT": str(join_averages),
+            },
+            "depends_on": {
+                "rabbitmq": {"condition": "service_healthy"},
+            },
+        }
+    
+    for join_average_id in range(join_averages):
+        service_name = f"join_average_{join_average_id}"
+
+        services[service_name] = {
+            "build": {
+                "context": "./src/",
+                "dockerfile": "services/join_average/Dockerfile",
+            },
+            "container_name": service_name,
+            "environment": {
+                "PYTHONUNBUFFERED": "1",
+                "LOG_LEVEL": log_level,
+                "MOM_HOST": "rabbitmq",
+                "ID": str(join_average_id),
+                "JOIN_QUEUE": "join_queue",
+                "JOIN_AVERAGE_QUEUE": "join_average_queue",
+                "GATEWAY_PREFIX": "gateway",
+                "CHUNK_SIZE": "1000",
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
@@ -191,147 +330,6 @@ def build_compose(
             },
         }
 
-    for reader_id in range(word_readers):
-        service_name = f"word_reader_{reader_id}"
-
-        services[service_name] = {
-            "build": {
-                "context": "./src/",
-                "dockerfile": "services/reader/Dockerfile",
-            },
-            "container_name": service_name,
-            "environment": {
-                "MOM_HOST": "rabbitmq",
-                "WORD_READER_OUTPUT_QUEUE": "word_reader_queue",
-                "WORD_READER_PREFIX": "word_reader",
-                "WORD_READER_AMOUNT": str(word_readers),
-                "ID": str(reader_id),
-                "SUM_WORDS_QUEUE_PREFIX": "sum_words_queue",
-                "SUM_WORDS_COUNT": str(sum_counts),
-                "JOIN_QUEUE": "join_queue",
-                "JOIN_COUNT": str(join_averages),
-                "SUM_AMOUNT_QUEUE": "sum_amount_queue",
-            },
-            "depends_on": {
-                "rabbitmq": {"condition": "service_healthy"},
-            },
-        }
-
-    for sum_id in range(sum_counts):
-        service_name = f"sum_{sum_id}"
-
-        services[service_name] = {
-            "build": {
-                "context": "./src/",
-                "dockerfile": "services/sum_count/Dockerfile",
-            },
-            "container_name": service_name,
-            "environment": {
-                "MOM_HOST": "rabbitmq",
-                "SUM_WORDS_QUEUE_PREFIX": "sum_words_queue",
-                "SUM_WORDS_COUNT": str(sum_counts),
-                "SUM_COUNT_PREFIX": "sum_count",
-                "COORDINATOR_ID": "0",
-                "GATEWAY_PREFIX": "gateway",
-                "CHUNK_SIZE": "1000",
-                "JOIN_TOP_QUEUE": "join_top",
-                "JOIN_TOP_COUNT": "1",
-                "ID": str(sum_id),
-            },
-            "depends_on": {
-                "rabbitmq": {"condition": "service_healthy"},
-            },
-        }
-
-    for join_top_id in range(join_tops):
-        service_name = f"join_top_{join_top_id}"
-
-        services[service_name] = {
-            "build": {
-                "context": "./src/",
-                "dockerfile": "services/join_top/Dockerfile",
-            },
-            "container_name": service_name,
-            "environment": {
-                "MOM_HOST": "rabbitmq",
-                "JOIN_TOP_QUEUE": "join_top",
-                "SUM_WORDS_COUNT": str(sum_counts),
-                "GATEWAY_PREFIX": "gateway",
-                "ID": str(join_top_id),
-            },
-            "depends_on": {
-                "rabbitmq": {"condition": "service_healthy"},
-            },
-        }
-
-    for sum_amount_id in range(sum_amounts):
-        service_name = f"sum_amount_{sum_amount_id}"
-
-        services[service_name] = {
-            "build": {
-                "context": "./src/",
-                "dockerfile": "services/sum_amount/Dockerfile",
-            },
-            "container_name": service_name,
-            "environment": {
-                "PYTHONUNBUFFERED": "1",
-                "MOM_HOST": "rabbitmq",
-                "ID": str(sum_amount_id),
-                "SUM_AMOUNT_QUEUE": "sum_amount_queue",
-                "SUM_AMOUNT_PREFIX": "sum_amount",
-                "SUM_AMOUNT_COUNT": str(sum_amounts),
-                "AVERAGE_QUEUE": "average_queue",
-                "AVERAGE_COUNT": str(averages),
-            },
-            "depends_on": {
-                "rabbitmq": {"condition": "service_healthy"},
-            },
-        }
-    for average_id in range(averages):
-        service_name = f"average_{average_id}"
-
-        services[service_name] = {
-            "build": {
-                "context": "./src/",
-                "dockerfile": "services/average/Dockerfile",
-            },
-            "container_name": service_name,
-            "environment": {
-                "PYTHONUNBUFFERED": "1",
-                "MOM_HOST": "rabbitmq",
-                "ID": str(average_id),
-                "AVERAGE_QUEUE": "average_queue",
-                "SUM_AMOUNT_COUNT": str(sum_amounts),
-                "JOIN_AVERAGE_QUEUE": "join_average_queue",
-                "JOIN_COUNT": str(join_averages),
-            },
-            "depends_on": {
-                "rabbitmq": {"condition": "service_healthy"},
-            },
-        }
-    
-    for join_average_id in range(join_averages):
-        service_name = f"join_average_{join_average_id}"
-
-        services[service_name] = {
-            "build": {
-                "context": "./src/",
-                "dockerfile": "services/join_average/Dockerfile",
-            },
-            "container_name": service_name,
-            "environment": {
-                "PYTHONUNBUFFERED": "1",
-                "MOM_HOST": "rabbitmq",
-                "ID": str(join_average_id),
-                "JOIN_QUEUE": "join_queue",
-                "JOIN_AVERAGE_QUEUE": "join_average_queue",
-                "GATEWAY_PREFIX": "gateway",
-                "CHUNK_SIZE": "1000",
-            },
-            "depends_on": {
-                "rabbitmq": {"condition": "service_healthy"},
-            },
-        }
     compose = {
         "services": services,
         "volumes": {
@@ -345,33 +343,25 @@ def build_compose(
         default_flow_style=False,
     )
 
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Generate a docker-compose.yml file"
     )
-
     parser.add_argument("--filters", type=positive_int, default=3, metavar="N")
-    parser.add_argument(
-        "--image-downloaders",
-        type=positive_int,
-        default=1,
-        metavar="N",
-    )
+    parser.add_argument("--word-readers", type=positive_int, default=4, metavar="N")
+    parser.add_argument("--image-downloaders", type=positive_int, default=1, metavar="N")
+    parser.add_argument("--sum-counts", type=positive_int, default=4, metavar="N")
+    parser.add_argument("--join-tops", type=positive_int, default=1, metavar="N")
+    parser.add_argument("--sum-amounts", type=positive_int, default=3, metavar="N")
+    parser.add_argument("--averages", type=positive_int, default=3, metavar="N")
+    parser.add_argument("--join-averages", type=positive_int, default=3, metavar="N")
     parser.add_argument("--clients", type=positive_int, default=1, metavar="N")
+    parser.add_argument("--jobs", type=positive_int, default=5, metavar="N")
     parser.add_argument(
-        "--word-readers",
-        type=positive_int,
-        default=4,
-        metavar="N",
+        "--debug",
+        type=bool,
+        default=False
     )
-    parser.add_argument(
-        "--sum-counts",
-        type=positive_int,
-        default=4,
-        metavar="N",
-    )
-    parser.add_argument("--jobs", type=positive_int, default=4, metavar="N")
     parser.add_argument(
         "--output",
         type=Path,
@@ -379,36 +369,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Output file path",
     )
 
-    parser.add_argument(
-        "--join-tops",
-        type=positive_int,
-        default=1,
-        metavar="N",
-    )
-
-    parser.add_argument(
-        "--sum-amounts",
-        type=positive_int,
-        default=3,
-        metavar="N",
-    )
-
-    parser.add_argument(
-        "--averages",
-        type=positive_int,
-        default=3,
-        metavar="N",
-    )
-
-    parser.add_argument(
-        "--join-averages",
-        type=positive_int,
-        default=3,
-        metavar="N",
-    )
-
     args = parser.parse_args(argv)
-
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         build_compose(
@@ -421,12 +382,12 @@ def main(argv: list[str] | None = None) -> int:
             sum_amounts=args.sum_amounts,
             averages=args.averages,
             join_averages=args.join_averages,
+            debug=args.debug
         ),
         encoding="utf-8",
     )
 
     return 0
 
-
 if __name__ == "__main__":
-    raise SystemExit(main())
+    SystemExit(main())

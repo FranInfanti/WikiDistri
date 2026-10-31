@@ -285,7 +285,7 @@ class Filter:
 
 def main():
     logging.basicConfig(
-        level=logging.INFO,
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s [%(levelname)s] %(threadName)s: %(message)s"
     )
     logging.getLogger("pika").propagate = False

@@ -9,7 +9,7 @@ from common import middleware, message_protocol, hashing, eof, rabbitmq
 
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
 
-INPUT_QUEUE = os.environ["WORD_READER_OUTPUT_QUEUE"]
+INPUT_QUEUE = os.environ["WORD_READER_QUEUE"]
 
 ID = int(os.environ["ID"])
 WORD_READER_PREFIX = os.environ["WORD_READER_PREFIX"]
@@ -219,9 +219,11 @@ class WordReader:
  
 def main():
     logging.basicConfig(
-        level=logging.INFO,
+        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s [%(levelname)s] %(threadName)s: %(message)s"
     )
+    logging.getLogger("pika").propagate = False
+
     try:
         WordReader().start()
     except Exception:
@@ -230,4 +232,4 @@ def main():
     return 0
 
 if __name__ == "__main__":
-    main()
+    SystemExit(main())

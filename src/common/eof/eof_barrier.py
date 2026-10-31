@@ -1,8 +1,9 @@
+import time
 import logging
 import threading
-from dataclasses import dataclass, field
-from typing import Callable
 
+from typing import Callable
+from dataclasses import dataclass, field
 from common import message_protocol, middleware, rabbitmq
 
 RETRY_DELAY = 0.5
@@ -106,13 +107,17 @@ class EofBarrier:
         except Exception:
             pass
 
-    def close(self):
+    def close(self, timeout: float = 5.0):
+        deadline = time.time() + self._TIMEOUT
+
         self.stop_consuming()
 
+        remaining = max(0.0, deadline - time.time())
         if self._consumer is not None:
-            self._consumer.join()
+            self._consumer.join(timeout=remaining)
 
-        self._publisher.stop()
+        remaining = max(0.0, deadline - time.time())
+        self._publisher.stop(timeout=remaining)
 
         try:
             self._input_exchange.close()
@@ -186,12 +191,6 @@ class EofBarrier:
             self._serialize(opcode, req_id, message), exchange_id=peer_id
         )
 
-    @staticmethod
-    def _serialize(opcode: int, req_id: int, message=None) -> bytes:
-        if message is None:
-            return message_protocol.internal.serialize(opcode=opcode, req_id=req_id)
-        return message_protocol.internal.serialize(opcode=opcode, req_id=req_id, message=message)
-
     def _on_control(self, message, ack, nack):
         try:
             opcode, req_id, _, payload = message_protocol.internal.deserialize(message)
@@ -236,3 +235,9 @@ class EofBarrier:
         except Exception:
             logging.exception("Error processing control message")
             nack()
+
+    @staticmethod
+    def _serialize(opcode: int, req_id: int, message=None) -> bytes:
+        if message is None:
+            return message_protocol.internal.serialize(opcode=opcode, req_id=req_id)
+        return message_protocol.internal.serialize(opcode=opcode, req_id=req_id, message=message)
