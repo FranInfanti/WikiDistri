@@ -78,7 +78,9 @@ class RabbitCoordinator:
                 self.publisher.publish_exchange(
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_COMMIT,
-                        req_id=req_id
+                        req_id=req_id,
+                        batches=1,
+                        message=self.id
                     )
                 )
                 
