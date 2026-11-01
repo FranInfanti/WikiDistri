@@ -192,7 +192,6 @@ class RabbitCoordinator:
 
         tracker = self.message_tracker.setdefault(req_id, entity.MessageTracker())
         tracker.record_expected(expected_messages=expected_messages)
-        logging.info(f"{expected_messages} =? {tracker.recv_messages}")
 
         # there is only one instance
         if self.instances == 1:
@@ -201,6 +200,7 @@ class RabbitCoordinator:
                 self._flush(req_id)
                 self.message_tracker.pop(req_id, None)
                 self.on_all_recv(req_id, tracker.sent_by_key())
+                return
             else:
                 logging.critical(f"Message count mismatch for req_id=%s; Expected %s, received %s",
                     req_id,

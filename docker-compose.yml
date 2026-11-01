@@ -4,18 +4,17 @@ services:
       context: .
       dockerfile: ./src/services/client/Dockerfile
     profiles:
-    - data-setup
+      - data-setup
     container_name: dataset-downloader
     entrypoint:
-    - python
-    - scripts/download_dataset.py
+      - python
+      - scripts/download_dataset.py
     environment:
       FILES_PER_LANGUAGE: ${FILES_PER_LANGUAGE:-5}
       WIKI_LANGUAGES: ${WIKI_LANGUAGES:-en,fr}
       MAX_ROWS: ${MAX_ROWS:-0}
     volumes:
-    - ./input:/app/input
-    - kaggle-cache:/cache/kagglehub
+      - ./input:/app/input
   rabbitmq:
     build:
       context: ./src/services/rabbitmq
@@ -30,8 +29,8 @@ services:
       test: rabbitmq-diagnostics check_port_connectivity
       timeout: 3s
     ports:
-    - 5672:5672
-    - 15672:15672
+      - 5672:5672
+      - 15672:15672
   gateway:
     build:
       context: ./src/
@@ -39,18 +38,18 @@ services:
     container_name: gateway
     stop_grace_period: 30s
     environment:
-      PYTHONUNBUFFERED: '1'
+      PYTHONUNBUFFERED: "1"
       LOG_LEVEL: INFO
       HOST: gateway
-      PORT: '5000'
-      JOBS: '5'
-      BATCH_SIZE: '50'
+      PORT: "5000"
+      JOBS: "5"
+      BATCH_SIZE: "50"
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
       FILTER_QUEUE: filter_queue
       WORD_READER_QUEUE: word_reader_queue
     ports:
-    - 5000:5000
+      - 5000:5000
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -61,50 +60,12 @@ services:
     container_name: filter_0
     stop_grace_period: 30s
     environment:
-      PYTHONUNBUFFERED: '1'
+      PYTHONUNBUFFERED: "1"
       LOG_LEVEL: INFO
-      ID: '0'
+      ID: "0"
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
-      FILTER_AMOUNT: '3'
-      FILTER_PREFIX: filter
-      FILTER_QUEUE: filter_queue
-      IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  filter_1:
-    build:
-      context: ./src/
-      dockerfile: services/filter/Dockerfile
-    container_name: filter_1
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      ID: '1'
-      MOM_HOST: rabbitmq
-      GATEWAY_PREFIX: gateway
-      FILTER_AMOUNT: '3'
-      FILTER_PREFIX: filter
-      FILTER_QUEUE: filter_queue
-      IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  filter_2:
-    build:
-      context: ./src/
-      dockerfile: services/filter/Dockerfile
-    container_name: filter_2
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      ID: '2'
-      MOM_HOST: rabbitmq
-      GATEWAY_PREFIX: gateway
-      FILTER_AMOUNT: '3'
+      FILTER_AMOUNT: "1"
       FILTER_PREFIX: filter
       FILTER_QUEUE: filter_queue
       IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
@@ -118,48 +79,12 @@ services:
     container_name: image_downloader_0
     stop_grace_period: 30s
     environment:
-      PYTHONUNBUFFERED: '1'
+      PYTHONUNBUFFERED: "1"
       LOG_LEVEL: INFO
-      ID: '0'
+      ID: "0"
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
-      IMAGE_DOWNLOADER_AMOUNT: '3'
-      IMAGE_DOWNLOADER_PREFIX: image_downloader
-      IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  image_downloader_1:
-    build:
-      context: ./src/
-      dockerfile: services/downloader/Dockerfile
-    container_name: image_downloader_1
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      ID: '1'
-      MOM_HOST: rabbitmq
-      GATEWAY_PREFIX: gateway
-      IMAGE_DOWNLOADER_AMOUNT: '3'
-      IMAGE_DOWNLOADER_PREFIX: image_downloader
-      IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  image_downloader_2:
-    build:
-      context: ./src/
-      dockerfile: services/downloader/Dockerfile
-    container_name: image_downloader_2
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      ID: '2'
-      MOM_HOST: rabbitmq
-      GATEWAY_PREFIX: gateway
-      IMAGE_DOWNLOADER_AMOUNT: '3'
+      IMAGE_DOWNLOADER_AMOUNT: "1"
       IMAGE_DOWNLOADER_PREFIX: image_downloader
       IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
     depends_on:
@@ -172,83 +97,17 @@ services:
     container_name: word_reader_0
     stop_grace_period: 30s
     environment:
-      PYTHONUNBUFFERED: '1'
+      PYTHONUNBUFFERED: "1"
       LOG_LEVEL: INFO
-      ID: '0'
+      ID: "0"
       MOM_HOST: rabbitmq
-      WORD_READER_AMOUNT: '4'
+      WORD_READER_AMOUNT: "1"
       WORD_READER_PREFIX: word_reader
       WORD_READER_QUEUE: word_reader_queue
-      SUM_WORDS_COUNT: '4'
+      SUM_WORDS_COUNT: "1"
       SUM_WORDS_QUEUE_PREFIX: sum_words_queue
       SUM_AMOUNT_QUEUE: sum_amount_queue
-      JOIN_COUNT: '3'
-      JOIN_QUEUE: join_queue
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  word_reader_1:
-    build:
-      context: ./src/
-      dockerfile: services/reader/Dockerfile
-    container_name: word_reader_1
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      ID: '1'
-      MOM_HOST: rabbitmq
-      WORD_READER_AMOUNT: '4'
-      WORD_READER_PREFIX: word_reader
-      WORD_READER_QUEUE: word_reader_queue
-      SUM_WORDS_COUNT: '4'
-      SUM_WORDS_QUEUE_PREFIX: sum_words_queue
-      SUM_AMOUNT_QUEUE: sum_amount_queue
-      JOIN_COUNT: '3'
-      JOIN_QUEUE: join_queue
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  word_reader_2:
-    build:
-      context: ./src/
-      dockerfile: services/reader/Dockerfile
-    container_name: word_reader_2
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      ID: '2'
-      MOM_HOST: rabbitmq
-      WORD_READER_AMOUNT: '4'
-      WORD_READER_PREFIX: word_reader
-      WORD_READER_QUEUE: word_reader_queue
-      SUM_WORDS_COUNT: '4'
-      SUM_WORDS_QUEUE_PREFIX: sum_words_queue
-      SUM_AMOUNT_QUEUE: sum_amount_queue
-      JOIN_COUNT: '3'
-      JOIN_QUEUE: join_queue
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  word_reader_3:
-    build:
-      context: ./src/
-      dockerfile: services/reader/Dockerfile
-    container_name: word_reader_3
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      ID: '3'
-      MOM_HOST: rabbitmq
-      WORD_READER_AMOUNT: '4'
-      WORD_READER_PREFIX: word_reader
-      WORD_READER_QUEUE: word_reader_queue
-      SUM_WORDS_COUNT: '4'
-      SUM_WORDS_QUEUE_PREFIX: sum_words_queue
-      SUM_AMOUNT_QUEUE: sum_amount_queue
-      JOIN_COUNT: '3'
+      JOIN_COUNT: "1"
       JOIN_QUEUE: join_queue
     depends_on:
       rabbitmq:
@@ -260,84 +119,18 @@ services:
     container_name: sum_0
     stop_grace_period: 30s
     environment:
-      PYTHONUNBUFFERED: '1'
+      PYTHONUNBUFFERED: "1"
       LOG_LEVEL: INFO
       MOM_HOST: rabbitmq
       SUM_WORDS_QUEUE_PREFIX: sum_words_queue
-      SUM_WORDS_COUNT: '4'
+      SUM_WORDS_COUNT: "1"
       SUM_COUNT_PREFIX: sum_count
-      COORDINATOR_ID: '0'
+      COORDINATOR_ID: "0"
       GATEWAY_PREFIX: gateway
-      CHUNK_SIZE: '1000'
+      CHUNK_SIZE: "1000"
       JOIN_TOP_QUEUE: join_top
-      JOIN_TOP_COUNT: '1'
-      ID: '0'
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  sum_1:
-    build:
-      context: ./src/
-      dockerfile: services/sum_count/Dockerfile
-    container_name: sum_1
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      MOM_HOST: rabbitmq
-      SUM_WORDS_QUEUE_PREFIX: sum_words_queue
-      SUM_WORDS_COUNT: '4'
-      SUM_COUNT_PREFIX: sum_count
-      COORDINATOR_ID: '0'
-      GATEWAY_PREFIX: gateway
-      CHUNK_SIZE: '1000'
-      JOIN_TOP_QUEUE: join_top
-      JOIN_TOP_COUNT: '1'
-      ID: '1'
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  sum_2:
-    build:
-      context: ./src/
-      dockerfile: services/sum_count/Dockerfile
-    container_name: sum_2
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      MOM_HOST: rabbitmq
-      SUM_WORDS_QUEUE_PREFIX: sum_words_queue
-      SUM_WORDS_COUNT: '4'
-      SUM_COUNT_PREFIX: sum_count
-      COORDINATOR_ID: '0'
-      GATEWAY_PREFIX: gateway
-      CHUNK_SIZE: '1000'
-      JOIN_TOP_QUEUE: join_top
-      JOIN_TOP_COUNT: '1'
-      ID: '2'
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  sum_3:
-    build:
-      context: ./src/
-      dockerfile: services/sum_count/Dockerfile
-    container_name: sum_3
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      MOM_HOST: rabbitmq
-      SUM_WORDS_QUEUE_PREFIX: sum_words_queue
-      SUM_WORDS_COUNT: '4'
-      SUM_COUNT_PREFIX: sum_count
-      COORDINATOR_ID: '0'
-      GATEWAY_PREFIX: gateway
-      CHUNK_SIZE: '1000'
-      JOIN_TOP_QUEUE: join_top
-      JOIN_TOP_COUNT: '1'
-      ID: '3'
+      JOIN_TOP_COUNT: "1"
+      ID: "0"
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -348,13 +141,13 @@ services:
     container_name: join_top_0
     stop_grace_period: 30s
     environment:
-      PYTHONUNBUFFERED: '1'
+      PYTHONUNBUFFERED: "1"
       LOG_LEVEL: INFO
       MOM_HOST: rabbitmq
       JOIN_TOP_QUEUE: join_top
-      SUM_WORDS_COUNT: '4'
+      SUM_WORDS_COUNT: "1"
       GATEWAY_PREFIX: gateway
-      ID: '0'
+      ID: "0"
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -365,53 +158,15 @@ services:
     container_name: sum_amount_0
     stop_grace_period: 30s
     environment:
-      PYTHONUNBUFFERED: '1'
+      PYTHONUNBUFFERED: "1"
       LOG_LEVEL: INFO
       MOM_HOST: rabbitmq
-      ID: '0'
+      ID: "0"
       SUM_AMOUNT_QUEUE: sum_amount_queue
       SUM_AMOUNT_PREFIX: sum_amount
-      SUM_AMOUNT_COUNT: '3'
+      SUM_AMOUNT_COUNT: "1"
       AVERAGE_QUEUE: average_queue
-      AVERAGE_COUNT: '3'
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  sum_amount_1:
-    build:
-      context: ./src/
-      dockerfile: services/sum_amount/Dockerfile
-    container_name: sum_amount_1
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      MOM_HOST: rabbitmq
-      ID: '1'
-      SUM_AMOUNT_QUEUE: sum_amount_queue
-      SUM_AMOUNT_PREFIX: sum_amount
-      SUM_AMOUNT_COUNT: '3'
-      AVERAGE_QUEUE: average_queue
-      AVERAGE_COUNT: '3'
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  sum_amount_2:
-    build:
-      context: ./src/
-      dockerfile: services/sum_amount/Dockerfile
-    container_name: sum_amount_2
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      MOM_HOST: rabbitmq
-      ID: '2'
-      SUM_AMOUNT_QUEUE: sum_amount_queue
-      SUM_AMOUNT_PREFIX: sum_amount
-      SUM_AMOUNT_COUNT: '3'
-      AVERAGE_QUEUE: average_queue
-      AVERAGE_COUNT: '3'
+      AVERAGE_COUNT: "1"
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -422,50 +177,14 @@ services:
     container_name: average_0
     stop_grace_period: 30s
     environment:
-      PYTHONUNBUFFERED: '1'
+      PYTHONUNBUFFERED: "1"
       LOG_LEVEL: INFO
       MOM_HOST: rabbitmq
-      ID: '0'
+      ID: "0"
       AVERAGE_QUEUE: average_queue
-      SUM_AMOUNT_COUNT: '3'
+      SUM_AMOUNT_COUNT: "1"
       JOIN_AVERAGE_QUEUE: join_average_queue
-      JOIN_COUNT: '3'
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  average_1:
-    build:
-      context: ./src/
-      dockerfile: services/average/Dockerfile
-    container_name: average_1
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      MOM_HOST: rabbitmq
-      ID: '1'
-      AVERAGE_QUEUE: average_queue
-      SUM_AMOUNT_COUNT: '3'
-      JOIN_AVERAGE_QUEUE: join_average_queue
-      JOIN_COUNT: '3'
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  average_2:
-    build:
-      context: ./src/
-      dockerfile: services/average/Dockerfile
-    container_name: average_2
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      MOM_HOST: rabbitmq
-      ID: '2'
-      AVERAGE_QUEUE: average_queue
-      SUM_AMOUNT_COUNT: '3'
-      JOIN_AVERAGE_QUEUE: join_average_queue
-      JOIN_COUNT: '3'
+      JOIN_COUNT: "1"
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -476,50 +195,17 @@ services:
     container_name: join_average_0
     stop_grace_period: 30s
     environment:
-      PYTHONUNBUFFERED: '1'
+      PYTHONUNBUFFERED: "1"
       LOG_LEVEL: INFO
       MOM_HOST: rabbitmq
-      ID: '0'
+      ID: "0"
       JOIN_QUEUE: join_queue
+      JOIN_PREFIX: join
+      JOIN_COUNT: "1"
+      COORDINATOR_ID: "0"
       JOIN_AVERAGE_QUEUE: join_average_queue
       GATEWAY_PREFIX: gateway
-      CHUNK_SIZE: '1000'
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  join_average_1:
-    build:
-      context: ./src/
-      dockerfile: services/join_average/Dockerfile
-    container_name: join_average_1
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      MOM_HOST: rabbitmq
-      ID: '1'
-      JOIN_QUEUE: join_queue
-      JOIN_AVERAGE_QUEUE: join_average_queue
-      GATEWAY_PREFIX: gateway
-      CHUNK_SIZE: '1000'
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-  join_average_2:
-    build:
-      context: ./src/
-      dockerfile: services/join_average/Dockerfile
-    container_name: join_average_2
-    stop_grace_period: 30s
-    environment:
-      PYTHONUNBUFFERED: '1'
-      LOG_LEVEL: INFO
-      MOM_HOST: rabbitmq
-      ID: '2'
-      JOIN_QUEUE: join_queue
-      JOIN_AVERAGE_QUEUE: join_average_queue
-      GATEWAY_PREFIX: gateway
-      CHUNK_SIZE: '1000'
+      CHUNK_SIZE: "1000"
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -530,16 +216,20 @@ services:
     container_name: client_0
     stop_grace_period: 30s
     environment:
-      PYTHONUNBUFFERED: '1'
-      INPUT_FILE: /app/input/articles.csv
+      PYTHONUNBUFFERED: "1"
+      CLIENT_ID: client_0
+      OUTPUT_DIR: /app/output
+      DOWNLOAD_DIR: /app/input
+      FILES_PER_LANGUAGE: "5"
+      WIKI_LANGUAGES: en,fr
+      MAX_ROWS: "0"
       SERVER_HOST: gateway
-      SERVER_PORT: '5000'
-      BATCH_SIZE: '100'
+      SERVER_PORT: "5000"
+      BATCH_SIZE: "100"
+      PARQUET_BATCH_SIZE: "50"
     volumes:
-    - ./input:/app/input:ro
-    - ./output:/app/output
+      - ./input:/app/input
+      - ./output:/app/output
     depends_on:
       gateway:
         condition: service_started
-volumes:
-  kaggle-cache: null

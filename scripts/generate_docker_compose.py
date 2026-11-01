@@ -62,7 +62,6 @@ def build_compose(
             },
             "volumes": [
                 "./input:/app/input",
-                "kaggle-cache:/cache/kagglehub",
             ],
         },
         "rabbitmq": {
@@ -306,6 +305,9 @@ def build_compose(
                 "MOM_HOST": "rabbitmq",
                 "ID": str(join_average_id),
                 "JOIN_QUEUE": "join_queue",
+                "JOIN_PREFIX": "join",
+                "JOIN_COUNT": str(join_averages),
+                "COORDINATOR_ID": "0",
                 "JOIN_AVERAGE_QUEUE": "join_average_queue",
                 "GATEWAY_PREFIX": "gateway",
                 "CHUNK_SIZE": "1000",
@@ -326,13 +328,19 @@ def build_compose(
             "stop_grace_period": "30s",
             "environment": {
                 "PYTHONUNBUFFERED": "1",
-                "INPUT_FILE": "/app/input/articles.csv",
+                "CLIENT_ID": "client_0",
+                "OUTPUT_DIR": "/app/output",
+                "DOWNLOAD_DIR": "/app/input",
+                "FILES_PER_LANGUAGE": "5",
+                "WIKI_LANGUAGES": "en,fr",
+                "MAX_ROWS": "0",
                 "SERVER_HOST": "gateway",
                 "SERVER_PORT": "5000",
                 "BATCH_SIZE": "100",
+                "PARQUET_BATCH_SIZE": "50"
             },
             "volumes": [
-                "./input:/app/input:ro",
+                "./input:/app/input",
                 "./output:/app/output",
             ],
             "depends_on": {
@@ -342,9 +350,6 @@ def build_compose(
 
     compose = {
         "services": services,
-        "volumes": {
-            "kaggle-cache": None,
-        },
     }
 
     return yaml.safe_dump(

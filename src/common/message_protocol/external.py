@@ -3,9 +3,9 @@ import socket
 from common import safe_socket
 from common import message_protocol
 
-_OPCODE_SIZE = 1
-_BATCHES_SIZE = 2
-_LENGTH_SIZE = 4
+_OPCODE_SIZE = message_protocol.OPCODE_SIZE
+_BATCHES_SIZE = message_protocol.BATCHES_SIZE
+_LENGTH_SIZE = message_protocol.LENGTH_SIZE
 
 _HEADER_SIZE = _OPCODE_SIZE + _BATCHES_SIZE + _LENGTH_SIZE
 

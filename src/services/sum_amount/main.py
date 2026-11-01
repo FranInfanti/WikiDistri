@@ -4,7 +4,7 @@ import signal
 import logging
 import threading
 
-from common import middleware, message_protocol, rabbitmq, eof
+from common import middleware, message_protocol, rabbitmq
 
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
 

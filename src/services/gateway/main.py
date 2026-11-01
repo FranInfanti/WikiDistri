@@ -10,7 +10,7 @@ import functools
 import threading
 import itertools
 
-from common import entity, middleware, message_protocol, rabbitmq
+from common import middleware, message_protocol, rabbitmq
 
 HOST = os.environ["HOST"]
 PORT = int(os.environ["PORT"])
@@ -26,12 +26,14 @@ def job_format(job_id: int, messages: list):
     batch = []
     for message in messages:
         if job_id == 1:
+            logging.debug(f"Formatting message for job_id={job_id}: {message}")
             # [..., [ [url_0, date_modified_0], ..., [url_n, date_modified_n] ]]
             url, date_modified = message
             batch.append(
                 f"{job_id},{url},{date_modified}"
             )
         elif job_id == 2:
+            logging.debug(f"Formatting message for job_id={job_id}: {message}")
             # [..., [name, article_url, image_url, image_content_type, image_bytes]]
             name, url, image_url, image_content_type, b64_image_bytes = message
             row = io.StringIO(newline="")
@@ -40,18 +42,21 @@ def job_format(job_id: int, messages: list):
             )
             batch.append(row.getvalue()[:-1])
         elif job_id == 3:
+            logging.debug(f"Formatting message for job_id={job_id}: {message}")
             # [..., [ word_0, ..., word_n ]]
             word = message
             batch.append(
                 f"{job_id},{word}"
             )
         elif job_id == 4:
+            logging.debug(f"Formatting message for job_id={job_id}: {message}")
             # [..., [ word_0, ..., word_n ]]
             word = message
             batch.append(
                 f"{job_id},{word}"
             )
         elif job_id == 5:
+            logging.debug(f"Formatting message for job_id={job_id}: {message}")
             # [..., [ [url_0, amount_0], ..., [url_n, amount_n] ]]
             url, amount = message
             batch.append(
@@ -115,11 +120,14 @@ class Gateway:
         logging.info(f"Waiting up to {self._TIMEOUT} seconds for {len(active_threads)} active threads to stop")
         for thread in active_threads:
             remaining = max(0.0, deadline - time.time())
+
             if remaining <= 0:
                 break
+
             thread.join(timeout=remaining)
 
         remaining_threads = [thread.name for thread in active_threads if thread.is_alive()]
+
         if remaining_threads:
             logging.warning(f"Shutdown timed out with still {len(remaining_threads)} active threads")
 
@@ -133,111 +141,68 @@ class Gateway:
             logging.info("All active threads stopped")
 
     def _publish_eof(self, req_id: int, articles_sent: int):
-        self.publisher.publish_queue(
-            queue=FILTER_QUEUE,
-            message=message_protocol.internal.serialize(
-                opcode=message_protocol.OPCODE_EOF,
-                req_id=req_id,
-                message=articles_sent
-            )
+        message = message_protocol.internal.serialize(
+            opcode=message_protocol.OPCODE_EOF, 
+            req_id=req_id, 
+            message=articles_sent
         )
 
-        self.publisher.publish_queue(
-            queue=WORD_READER_QUEUE,
-            message=message_protocol.internal.serialize(
-                opcode=message_protocol.OPCODE_EOF,
-                req_id=req_id,
-                message=articles_sent
-            )
+        for queue in (FILTER_QUEUE, WORD_READER_QUEUE):
+            self.publisher.publish_queue(queue=queue, message=message)
+
+    def _publish_data(self, req_id: int, batches: int, payload: bytes):
+        logging.debug(f"Upload {batches} messages for req_id={req_id}")
+
+        filter_records, reader_records = (
+            message_protocol.articles.project_batches(payload, batches)
         )
 
-    def _publish_data(self, req_id: int, batches: int, message: bytes):
-        batch_filter = []
-        serialized_filter_batch = b""
+        for queue, records in (
+            (FILTER_QUEUE, filter_records),
+            (WORD_READER_QUEUE, reader_records),
+        ):
+            batch = []
+            serialized_batch = b""
 
-        batch_word_reader = []
-        serialized_word_reader_batch = b""
-
-        for line in message_protocol.batching.unbatch_messages(message, batches):
-            wikipedia_article = entity.WikipediaArticle.from_csv(line)
-
-            filter_message = wikipedia_article.to_list(
-                name=True, url=True, image=True, in_language=True, date_modified=True, sections=True
-            )
-            reader_message = wikipedia_article.to_list(
-                abstract=True, url=True, date_modified=True, in_language=True,
-            )
-
-            candidate_filter_batch = message_protocol.internal.serialize(
-                opcode=message_protocol.OPCODE_DATA,
-                req_id=req_id,
-                batches=len(batch_filter) + 1,
-                message=[*batch_filter, filter_message]
-            )
-            if batch_filter and (
-                len(batch_filter) >= BATCH_SIZE
-                or len(candidate_filter_batch) > message_protocol.MAX_RABBITMQ_MESSAGE_SIZE
-            ):
-                self.publisher.publish_queue(queue=FILTER_QUEUE, message=serialized_filter_batch)
-
-                batch_filter = []
-                candidate_filter_batch = message_protocol.internal.serialize(
+            for record in records:
+                candidate = message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
                     req_id=req_id,
-                    batches=1,
-                    message=[filter_message]
+                    batches=len(batch) + 1,
+                    message=[*batch, record],
                 )
+                if batch and (
+                    len(batch) >= BATCH_SIZE
+                    or len(candidate) > message_protocol.MAX_RABBITMQ_MESSAGE_SIZE
+                ):
+                    self.publisher.publish_queue(queue=queue, message=serialized_batch)
+                    
+                    batch = []
+                    candidate = message_protocol.internal.serialize(
+                        opcode=message_protocol.OPCODE_DATA,
+                        req_id=req_id,
+                        batches=1,
+                        message=[record],
+                    )
 
-            if len(candidate_filter_batch) > message_protocol.MAX_RABBITMQ_MESSAGE_SIZE:
-                raise ValueError(
-                    f"Serialized filter message for req_id={req_id} exceeds "
-                    f"RabbitMQ's {message_protocol.MAX_RABBITMQ_MESSAGE_SIZE}-byte limit"
-                )
+                if len(candidate) > message_protocol.MAX_RABBITMQ_MESSAGE_SIZE:
+                    raise ValueError(
+                        f"Serialized message for queue {queue}, req_id={req_id} exceeds "
+                        f"RabbitMQ's {message_protocol.MAX_RABBITMQ_MESSAGE_SIZE}-byte limit"
+                    )
 
-            batch_filter.append(filter_message)
-            serialized_filter_batch = candidate_filter_batch
+                batch.append(record)
+                serialized_batch = candidate
 
-            candidate_word_reader_batch = message_protocol.internal.serialize(
-                opcode=message_protocol.OPCODE_DATA,
-                req_id=req_id,
-                batches=len(batch_word_reader) + 1,
-                message=[*batch_word_reader, reader_message]
-            )
-            if batch_word_reader and (
-                len(batch_word_reader) >= BATCH_SIZE
-                or len(candidate_word_reader_batch) > message_protocol.MAX_RABBITMQ_MESSAGE_SIZE
-            ):
-                self.publisher.publish_queue(queue=WORD_READER_QUEUE, message=serialized_word_reader_batch)
-
-                batch_word_reader = []
-                candidate_word_reader_batch = message_protocol.internal.serialize(
-                    opcode=message_protocol.OPCODE_DATA,
-                    req_id=req_id,
-                    batches=1,
-                    message=[reader_message]
-                )
-
-            if len(candidate_word_reader_batch) > message_protocol.MAX_RABBITMQ_MESSAGE_SIZE:
-                raise ValueError(
-                    f"Serialized word-reader message for req_id={req_id} exceeds "
-                    f"RabbitMQ's {message_protocol.MAX_RABBITMQ_MESSAGE_SIZE}-byte limit"
-                )
-
-            batch_word_reader.append(reader_message)
-            serialized_word_reader_batch = candidate_word_reader_batch
-
-        if batch_filter:
-            self.publisher.publish_queue(queue=FILTER_QUEUE, message=serialized_filter_batch)
-
-        if batch_word_reader:
-            self.publisher.publish_queue(queue=WORD_READER_QUEUE, message=serialized_word_reader_batch)
+            if batch:
+                self.publisher.publish_queue(queue=queue, message=serialized_batch)
 
     def _upload(self, req_id: int, client_req: client.Client):
-        logging.info(f"Started upload for req_id={req_id}")
+        logging.info("Started upload for req_id=%s", req_id)
         try:
             while self.is_running:
-                opcode, batches, payload = ( 
-                    message_protocol.external.recv_message(client_req.client_socket) # One thread per client
+                opcode, batches, payload = (
+                    message_protocol.external.recv_message(client_req.client_socket)
                 )
                 if opcode == message_protocol.OPCODE_EOF:
                     logging.info(
@@ -369,6 +334,7 @@ class Gateway:
                     except OSError:
                         if self.is_running:
                             raise
+
                         logging.warning("Interrupted by the SIGTERM")
                         return
                     self._handle_client_request(client_socket)
@@ -383,7 +349,6 @@ def main():
         format="%(asctime)s [%(levelname)s] %(threadName)s: %(message)s"
     )
     logging.getLogger("pika").propagate = False
-    
     try:
         Gateway(HOST, PORT).start()
     except Exception:

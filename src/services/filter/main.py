@@ -130,7 +130,11 @@ class Filter:
             )
         )
 
-        key, sent = sent_messages[0]
+        if len(sent_messages) == 0:
+            key, sent = IMAGE_DOWNLOADER_QUEUE, 0
+        else:
+            key, sent = sent_messages[0]
+
         if key != IMAGE_DOWNLOADER_QUEUE:
             raise ValueError(f"Unknown key; expected: {IMAGE_DOWNLOADER_QUEUE}, received: {key}")
 
