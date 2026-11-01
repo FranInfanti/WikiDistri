@@ -1,16 +1,33 @@
+"""Expone el protocolo y sus constantes para los servicios del sistema."""
+
+from .constants import (
+    BATCH_COUNT_SIZE,
+    BINARY_BATCH_HEADER_FORMAT,
+    BINARY_BATCH_MARKER,
+    BINARY_BATCH_MARKER_SIZE,
+    BITS_PER_BYTE,
+    DEFAULT_BATCH_BYTES,
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_MAX_ROWS,
+    ENCODING,
+    ENDIANNESS,
+    MAX_BATCH_RECORDS,
+    MAX_PAYLOAD_SIZE,
+    MAX_PREFIX_LENGTH,
+    MAX_RABBITMQ_MESSAGE_SIZE,
+    MIN_BATCH_RECORDS,
+    NULL_FIELD_LENGTH,
+    OPCODE_ACK,
+    OPCODE_COMMIT,
+    OPCODE_DATA,
+    OPCODE_EOF,
+    OPCODE_OK,
+    OPCODE_PREPARE,
+    OPCODE_SIZE,
+    REQUEST_ID_SIZE,
+    UNLIMITED_ROWS,
+)
+from . import articles
 from .internal import serialize, deserialize
 from .external import send_message, recv_message
 from .batching import batch_messages, batch_payload_size, unbatch_messages
-
-ENCODING = "utf-8"
-ENDIANNESS = "big"
-MAX_PREFIX_LENGTH = 4
-MAX_PAYLOAD_SIZE = (1 << 32) - 1
-MAX_RABBITMQ_MESSAGE_SIZE = 134217728
-
-OPCODE_EOF = 0
-OPCODE_DATA = 1
-OPCODE_ACK = 2
-OPCODE_PREPARE = 3
-OPCODE_OK = 4
-OPCODE_COMMIT = 5

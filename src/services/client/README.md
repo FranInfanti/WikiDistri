@@ -1,201 +1,301 @@
 # Cliente
 
-Ejecutá los comandos desde la raíz del proyecto, con Docker Desktop abierto.
+El cliente descarga los Parquet necesarios desde Kaggle y los lee por lotes con PyArrow. No genera ni necesita
+un CSV intermedio. Un thread lee, normaliza y envía artículos, otro recibe y guarda
+resultados sobre la misma conexión TCP.
 
-## Descargar todos los datos
+## Ejecutar un flujo completo
 
-```sh
-docker compose build
-FILES_PER_LANGUAGE=all docker compose run --rm dataset-downloader
-```
-
-`all` descarga el dataset completo y genera `input/articles.csv` con los artículos de inglés y francés. Necesitás espacio para los Parquet en la caché de Docker y para el CSV generado.
-
-## Descargar 1 o N Parquet
-
-```sh
-FILES_PER_LANGUAGE=1 docker compose run --rm dataset-downloader
-FILES_PER_LANGUAGE=3 docker compose run --rm dataset-downloader
-```
-
-La cantidad se aplica **por idioma**: los ejemplos descargan 2 y 6 Parquet, respectivamente. Para descargar uno solo, elegí también el idioma:
-
-```sh
-WIKI_LANGUAGES=en FILES_PER_LANGUAGE=1 docker compose run --rm dataset-downloader
-```
-
-Para generar un CSV de solo cinco filas:
-
-```sh
-MAX_ROWS=5 docker compose run --rm dataset-downloader
-```
-
-El límite cuenta filas totales. Se descarga al menos un Parquet completo, aunque el CSV tenga solo cinco filas. El archivo `input/articles.csv` tiene siete columnas de artículos, sin encabezado ni índice numérico.
-
-## Ejecutar el Job 1
-
-El Job 1 devuelve la URL y la fecha de última modificación de los artículos en inglés modificados en 2020 o antes. Ejecutá estos pasos desde la raíz del proyecto, con Docker Desktop abierto.
+Ejecutá los comandos desde la raíz del repositorio, con Docker Desktop iniciado.
+El flujo usa los Parquet disponibles en `input/`. Si no hay archivos `.parquet`,
+los descarga desde Kaggle y los conserva en esa carpeta. Un CSV existente en
+`input/` no sirve como entrada del cliente.
 
 ### 1. Construir las imágenes
 
 ```sh
-docker compose build dataset-downloader client rabbitmq gateway filter_0
+docker compose -f docker-compose.yml build
 ```
 
-### 2. Descargar una muestra de Wikipedia
+Hay que reconstruir cliente, gateway, filtros y lectores después de modificar el
+protocolo para que todos usen el mismo formato.
+
+### 2. Levantar todas las etapas de procesamiento
+
+La configuración actual tiene tres filtros, cuatro lectores, cuatro sumadores,
+un descargador de imágenes y un join de top. Levantá todas sus réplicas antes de
+ejecutar el cliente:
+
+Si estás en macOS y el puerto 5000 está ocupado, o Docker informa un conflicto de
+puertos al iniciar RabbitMQ, aplicá los comandos de la sección 5 y volvé a
+ejecutar este paso.
 
 ```sh
-MAX_ROWS=1000 FILES_PER_LANGUAGE=1 docker compose run --rm dataset-downloader
+docker compose -f docker-compose.yml up -d --wait \
+  rabbitmq gateway \
+  filter_0 filter_1 filter_2 \
+  image_downloader_0 \
+  word_reader_0 word_reader_1 word_reader_2 word_reader_3 \
+  sum_0 sum_1 sum_2 sum_3 \
+  join_top_0
 ```
 
-Esto genera `input/articles.csv` con hasta 1000 artículos reales. Se descarga al menos un Parquet completo para obtener esas filas. Para procesar el dataset completo, reemplazá ese comando por:
+No se inicia todavía `client_0` ni hace falta ejecutar `download` o
+`dataset-downloader`. El propio cliente obtiene los Parquet si los necesita.
+
+Es importante levantar las tres réplicas de filtro. Si solo se ejecuta
+`filter_0` pero `FILTER_AMOUNT=3`, las etapas pueden quedarse esperando la
+coordinación del EOF. Lo mismo aplica a los lectores y sumadores. Si cambiás las
+cantidades en Compose, adaptá la lista de servicios.
+
+Comprobá el estado y los logs antes de enviar datos:
 
 ```sh
-FILES_PER_LANGUAGE=all docker compose run --rm dataset-downloader
+docker compose -f docker-compose.yml ps -a
+docker compose -f docker-compose.yml logs --tail=60 \
+  gateway filter_0 filter_1 filter_2 \
+  image_downloader_0 \
+  word_reader_0 word_reader_1 word_reader_2 word_reader_3 \
+  sum_0 sum_1 sum_2 sum_3 join_top_0
 ```
 
-### 3. Levantar los servicios
+RabbitMQ debe estar `healthy` y los demás servicios deben estar `Up`. Si alguno
+aparece como `Exited`, revisá su log antes de continuar. `--wait` comprueba el
+estado de los contenedores, pero no garantiza que la aplicación no haya fallado
+después de arrancar.
 
-Si no usás macOS y el puerto 5000 está libre, seguí este paso sin modificar ni crear archivos YAML:
+### 3. Ejecutar el cliente con 200 artículos y batches de 50
 
 ```sh
-docker compose up -d --wait rabbitmq gateway filter_0
-docker compose logs --tail 20 gateway
+BATCH_SIZE=50 MAX_ROWS=200 docker compose -f docker-compose.yml run --rm --no-deps client_0
+echo $?
 ```
 
-En macOS, si el puerto 5000 está ocupado por `ControlCenter`, prepará una configuración local que habilite escritura en `output` y evite publicar ese puerto en la Mac. El cliente se conecta a `gateway:5000` dentro de Docker. El YAML original no se modifica:
+El resultado de `echo $?` debe ser `0`. El cliente envía hasta 200 artículos,
+agrupados en cuatro batches de 50 si hay suficientes filas y caben en el límite
+de bytes. Después envía un único EOF y espera los resultados y el EOF global del
+gateway. No interrumpas el cliente al terminar la subida, todavía puede estar
+recibiendo resultados o imágenes.
+
+Si necesitás elegir un Parquet concreto que ya está en `input/`:
 
 ```sh
-cat > /tmp/wikidistri-local.yaml <<'YAML'
-services:
-  gateway:
-    ports: !reset []
-  client:
-    volumes: !override
-      - ./input:/app/input:ro
-      - ./output:/app/output:rw
-    environment:
-      OUTPUT_DIR: /app/output
-YAML
-
-docker compose -f docker-compose.yaml -f /tmp/wikidistri-local.yaml \
-  up -d --wait rabbitmq gateway filter_0
-docker compose logs --tail 20 gateway
+BATCH_SIZE=50 MAX_ROWS=200 docker compose -f docker-compose.yml run --rm --no-deps \
+  -e INPUT_FILE=/app/input/articles.parquet client_0
 ```
 
-El Gateway debe mostrar `Listening to connections` antes de ejecutar el cliente. Si elegiste la alternativa para macOS, usá ambos archivos `-f` al levantar los servicios y ejecutar el cliente. Si se elimina el archivo temporal, volvé a crearlo con el comando anterior.
+Reemplazá `articles.parquet` por la ruta real dentro de `input/`. El archivo se
+lee desde disco por lotes. `MAX_ROWS` limita el total procesado y enviado, no el
+tamaño de la descarga. Si hay que obtener un Parquet de Kaggle, se descarga
+completo aunque solo se consuman 200 filas.
 
-### 4. Ejecutar el cliente
+### 4. Revisar los resultados de las consultas
 
-Si seguiste los pasos sin crear un YAML local:
-
-```sh
-docker compose run --rm --no-deps \
-  --volume "$PWD/output:/app/results:rw" \
-  --env OUTPUT_DIR=/app/results \
-  client
-```
-
-Se monta la salida en `/app/results` para evitar el montaje de solo lectura que el Compose original tiene en `/app/output`. Los archivos quedan igualmente en `output/` en tu máquina. Este permiso de escritura es necesario en cualquier sistema operativo.
-
-Si creaste la configuración local para macOS:
-
-```sh
-docker compose -f docker-compose.yaml -f /tmp/wikidistri-local.yaml \
-  run --rm --no-deps client
-```
-
-`!override` reemplaza los montajes del cliente para que `output` tenga permiso de escritura; pasar solamente `--volume` a `run` no quitó el modo de solo lectura en la versión de Compose utilizada. El cliente envía los CSV de `input/` por batches mientras otro thread recibe y guarda las respuestas del Gateway.
-
-### 5. Revisar los resultados
-
-```sh
-cat output/query_1.csv
-docker compose logs gateway filter_0
-```
-
-Cada fila de `query_1.csv` contiene `URL,fecha_de_modificación`. El archivo puede quedar vacío si ningún artículo cumple la condición. En los logs del Gateway, `articles_sent` indica cuántos artículos recibió y `All jobs finished` confirma el fin de los Jobs configurados.
-
-La configuración actual usa `JOBS: 1`: sólo ejecuta el Job 1 y los archivos de consultas 2 a 5 quedan vacíos. Los archivos conservan `.partial` si la ejecución falla; al finalizar correctamente se guardan como `query_1.csv` a `query_5.csv`. Cada ejecución reemplaza los resultados anteriores.
-
-### 6. Detener los servicios
-
-```sh
-docker compose stop
-```
-
-Para procesar nuevamente el CSV descargado, repetí desde el paso 3.
-
-## Probar el recorrido completo del Job 1
-
-Esta prueba ejecuta el cliente, el Gateway, RabbitMQ y el filtro reales. Envía cuatro artículos desde dos CSV: dos cumplen la condición del Job 1 (inglés y año de modificación menor o igual a 2020), uno está en francés y otro es de 2021. El resultado esperado son dos filas.
-
-Los archivos de esta prueba ya están preparados en `output/job1-demo/`:
-
-- `input/a.csv` e `input/b.csv`: artículos de entrada, sin encabezado.
-- `expected.csv`: las dos filas esperadas.
-- `compose.json`: configuración del entorno de prueba, con `JOBS=1` y salida con permiso de escritura.
-- `run_client.py`: ejecuta el cliente y registra el inicio de ambos threads. Pausa el envío después del primer batch hasta recibir un resultado real, para comprobar la recepción durante la carga.
-
-Estos archivos son locales: `output/` está excluido de Git. Los comandos siguientes suponen que conservás esa carpeta en la ubicación donde se preparó la prueba.
-
-### 1. Construir las imágenes
-
-Con Docker Desktop abierto, desde la raíz del repositorio:
-
-```sh
-docker compose -f output/job1-demo/compose.json build
-```
-
-### 2. Levantar RabbitMQ, el Gateway y el filtro
-
-```sh
-docker compose -f output/job1-demo/compose.json up -d --wait rabbitmq gateway filter_0
-docker compose -f output/job1-demo/compose.json ps
-docker compose -f output/job1-demo/compose.json logs --tail 20 gateway
-```
-
-RabbitMQ debe figurar como `healthy` y el Gateway debe mostrar `Listening to connections` antes de ejecutar el cliente.
-
-### 3. Ejecutar el cliente
-
-```sh
-docker compose -f output/job1-demo/compose.json run -T --rm client
-```
-
-La salida debe incluir estos mensajes; los horarios y números de thread pueden variar:
+El log del cliente informa la carpeta exacta, por ejemplo:
 
 ```text
-Thread-1 (send_batches): Sender thread started
-Thread-2 (receive_results): Receiver thread started
-Thread-2 (receive_results): Received real Job 1 result; upload_finished=False
-Thread-2 (receive_results): Received Gateway EOF
-MainThread: PASS: 4 articles sent from 2 CSVs, both threads started, real Job 1 received during upload, 2 expected rows saved
+Client client_0 output: /app/output/client_0/run_<id>
 ```
 
-`upload_finished=False` comprueba que llegó un resultado mientras el envío todavía estaba abierto. El mensaje `PASS` confirma que el cliente terminó correctamente y que el archivo guardado coincide con el resultado esperado. La pausa y estos registros pertenecen al ejecutor de la prueba; el cliente de producción no se modifica.
-
-### 4. Revisar los resultados y los logs
+En tu computadora corresponde a `output/client_0/run_<id>/`. Listá las ejecuciones
+para ubicar la más reciente:
 
 ```sh
-cat output/job1-demo/results/query_1.csv
-diff -u -w output/job1-demo/expected.csv output/job1-demo/results/query_1.csv
-docker compose -f output/job1-demo/compose.json logs gateway filter_0
+ls -lt output/client_0
 ```
 
-El archivo debe contener:
+Dentro de la carpeta de esa ejecución vas a encontrar:
 
-```csv
-https://example.org/en-2019,2019-01-02 03:04:05
-https://example.org/en-2020,2020-12-31 23:59:59
-```
+| Archivo | Resultado |
+| --- | --- |
+| `query_1.csv` | URL y fecha de artículos en inglés modificados hasta 2020 inclusive. |
+| `query_2.csv` | Nombre, URL y ruta local de imagen para artículos anteriores a 2020 con sección de biografía. La ruta queda vacía si no se obtuvo una imagen. |
+| `query_3.csv` | Palabras presentes en artículos de ambos idiomas, después del filtrado de stopwords. |
+| `query_4.csv` | Top de palabras por cantidad de artículos en los que aparecen, sumando ambos idiomas. |
+| `query_5.csv` | Vacío en la configuración actual. |
+| `images/` | Imágenes guardadas cuando la consulta 2 devuelve contenido descargado. |
 
-`diff` no debe mostrar diferencias; `-w` ignora las diferencias de espacios y finales de línea entre ambos CSV. En los logs, el Gateway debe informar `articles_sent=4` y `All jobs finished`; el filtro debe enviar dos resultados. Los archivos de consultas 2 a 5 quedan vacíos porque esta prueba sólo ejecuta el Job 1. Si el cliente falla, los archivos conservan el sufijo `.partial`.
+La ejecución finalizó correctamente cuando el cliente sale con código `0` y los
+archivos `query_1.csv` a `query_5.csv` ya no tienen la extensión `.partial`.
+Un archivo vacío no indica necesariamente una falla: puede no haber artículos
+que cumplan el filtro en las 200 filas seleccionadas.
 
-### 5. Detener el entorno de prueba
+El gateway está configurado con `JOBS=4`: espera las consultas 1 a 4. La consulta
+5 no tiene un consumidor de resultados implementado en este pipeline. Cambiar
+solamente `JOBS` a 5 dejaría al cliente esperando un EOF que no se produce.
+
+Con pocas filas puede leerse solo inglés, porque la descarga comienza por ese
+idioma. `WIKI_LANGUAGES=en,fr` no garantiza que las primeras 200 filas incluyan
+ambos idiomas. En ese caso `query_3.csv` puede quedar vacío y el flujo igual debe
+terminar correctamente. Para evaluar esa consulta con resultados, la entrada
+procesada debe incluir artículos de ambos idiomas con palabras en común.
+
+### 5. Diagnosticar una ejecución que no termina
+
+Desde otra terminal:
 
 ```sh
-docker compose -f output/job1-demo/compose.json stop
+docker compose -f docker-compose.yml ps -a
+docker compose -f docker-compose.yml logs -f --tail=100
 ```
 
-Para repetir la prueba, volvé al paso 2. El cliente reemplaza los archivos de resultados de la prueba anterior. El Compose original del proyecto permanece igual; este entorno usa su propia configuración y red.
+Revisá servicios detenidos, errores de conexión, excepciones y cantidades de
+réplicas que no coincidan con los servicios levantados. El gateway debe registrar
+`Upload completed` al recibir todos los artículos y `All jobs finished` cuando
+terminan las cuatro consultas. Los `.partial` conservan lo recibido si la
+ejecución falla.
+
+#### macOS: puerto 5000 ocupado
+
+Si aparece `Ports are not available` o `bind: address already in use` para el
+puerto 5000, ejecutá desde la raíz del repositorio:
+
+```sh
+sed -i '' 's/5000:5000/5001:5000/g' docker-compose.yml
+```
+
+Este comando usa la sintaxis de `sed` de macOS. Cambia el puerto publicado en tu
+Mac a 5001; los clientes dentro de Docker siguen conectándose a `gateway:5000`.
+Después volvé a ejecutar el comando del paso 2 para levantar las etapas.
+
+#### RabbitMQ: puertos ocupados u otro error de inicio
+
+Si Docker informa `Ports are not available` o `bind: address already in use`
+para los puertos 5672 o 15672 de RabbitMQ, en macOS ejecutá:
+
+```sh
+sed -i '' -e 's/5672:5672/5673:5672/g' -e 's/15672:15672/15673:15672/g' docker-compose.yml
+```
+
+En Linux, usá el mismo comando quitando `''` después de `-i`. Los servicios
+dentro de Docker siguen usando `rabbitmq:5672`. La interfaz de administración
+pasa a estar disponible en `http://localhost:15673`. Después repetí el paso 2.
+
+Si RabbitMQ aparece como `unhealthy` o `Exited` y el error no es de puertos,
+consultá el motivo antes de continuar:
+
+```sh
+docker compose -f docker-compose.yml logs --tail=100 rabbitmq
+```
+
+Los cambios de puertos se aplican al `docker-compose.yml` actual. Si lo
+regenerás con `scripts/generate_docker_compose.py`, volvé a aplicar los comandos
+necesarios antes de levantar los servicios.
+
+### 6. Detener el sistema
+
+```sh
+docker compose -f docker-compose.yml down
+```
+
+Los Parquet de `input/` y los resultados de `output/` se conservan en la
+computadora. Para repetir el flujo podés dejar las etapas levantadas y ejecutar
+otra vez el comando del cliente. Cada ejecución tiene su propia carpeta.
+
+## Configuración del cliente
+
+Variables del cliente:
+
+| Variable | Uso |
+| --- | --- |
+| `MAX_ROWS` | Límite total de filas procesadas y enviadas por cliente, `1000` por defecto y `0` para todas. |
+| `WIKI_LANGUAGES` | Idiomas a descargar: `en,fr` por defecto, también acepta `en` o `fr`. |
+| `FILES_PER_LANGUAGE` | Máximo de Parquet por idioma, `5` por defecto. `all` conserva la descarga completa original de KaggleHub si no hay Parquet en input. |
+| `INPUT_FILE` | Parquet local específico, tiene prioridad sobre `INPUT_DIR`. |
+| `INPUT_DIR` | Directorio con Parquet locales, buscados recursivamente, al indicarlo se omite Kaggle. |
+| `PARQUET_BATCH_SIZE` | Filas por lectura de PyArrow. Por defecto usa `BATCH_SIZE` y nunca lo supera. |
+| `BATCH_SIZE` | Artículos por mensaje TCP, entre `1` y `65535`, `50` por defecto. También se respeta el límite de bytes del protocolo. |
+| `BATCH_BYTES` | Límite de bytes del batch de artículos completos, 8 MiB por defecto. También respeta los límites de TCP y RabbitMQ. Un artículo que lo excede produce un error. |
+| `DOWNLOAD_DIR` | Directorio de descarga, `input` por defecto y `/app/input` en Docker. |
+| `CLIENT_ID` | Identificador para separar salidas. Compose asigna `client_0`, `client_1`, etc. Sin valor se genera uno único. |
+| `OUTPUT_DIR` | Raíz de resultados, `/app/output` en Compose. |
+
+Opcionalmente, para reutilizar un Parquet local específico de `input/` sin descargar:
+
+```sh
+docker compose run --rm --no-deps -e INPUT_FILE=/app/input/articles.parquet client_0
+```
+
+## Dos clientes en paralelo
+
+Generá la configuración con la cantidad de clientes y levantá todos los servicios:
+
+```sh
+python3 -m pip install PyYAML
+python3 scripts/generate_docker_compose.py --clients 2
+MAX_ROWS=1000 docker compose up --build
+```
+
+El generador necesita PyYAML instalado en el Python local.
+Cada cliente procesa independientemente el conjunto configurado, los datos no se
+reparten entre clientes.
+
+Los resultados se guardan por cliente y por ejecución:
+
+```text
+output/
+  client_0/run_<id>/query_1.csv ... query_5.csv
+  client_0/run_<id>/images/
+  client_1/run_<id>/query_1.csv ... query_5.csv
+  client_1/run_<id>/images/
+```
+
+Cada ejecución mantiene su carpeta independiente, como se describe en el flujo
+completo. La configuración actual espera cuatro consultas.
+
+## Protocolo de subida
+
+El cliente prepara un único batch de artículos completos y lo envía una sola vez.
+Se mantiene el encabezado TCP de siete bytes: opcode de 1 byte, cantidad de
+artículos de 2 bytes y longitud del payload de 4 bytes, en big endian.
+
+```text
+payload DATA = [longitud artículo: uint32][artículo] ...
+artículo = [longitud columna: uint32][columna UTF-8] ... (7 columnas)
+```
+
+Orden fijo: `abstract`, `name`, `url`, `date_modified`, `image`, `in_language`,
+`sections`. Las longitudes cuentan bytes UTF-8. `0` representa texto vacío,
+`0xffffffff` representa `None` y no lleva contenido.
+
+El cliente extrae `image.content_url` e `in_language.identifier`, formatea la fecha
+como `YYYY-MM-DD HH:MM:SS` y serializa las secciones como JSON. El gateway valida
+el sobre y agrega el contexto de solicitud, sin decodificar campos ni generar
+JSON con sus datos. Al publicar, recorre las longitudes y copia los bloques
+binarios de columnas que necesita cada rama. Recalcula el prefijo del artículo
+proyectado sin modificar los prefijos ni el contenido de las columnas.
+
+El mensaje DATA en RabbitMQ lleva `[WDB2: 4 bytes][req_id: uint64]
+[cantidad: uint16][batch]`, en big endian. Este formato se define en `internal.py`.
+El marcador `WDB2` identifica DATA con artículos proyectados, reemplaza la versión
+que enviaba artículos completos a ambos workers.
+Los mensajes internos de control, resultados y demás enlaces conservan JSON.
+
+Filtro y lector desarman su batch al consumirlo. Cada uno recibe y decodifica
+solamente sus columnas, en este orden:
+
+- Filtro: `name`, `url`, `date_modified`, `image`, `in_language`, `sections`.
+- Lector: `abstract`, `url`, `date_modified`, `in_language`.
+
+El cliente envía un único EOF de subida, con cantidad cero y payload vacío.
+El gateway mantiene `Client.articles_sent`, lo incrementa una sola vez después de
+publicar cada batch en ambas ramas y envía ese total en el EOF de cada cola.
+Una entrada vacía publica total cero en ambas ramas. Las respuestas al cliente
+conservan el protocolo anterior, incluido el EOF global vacío.
+
+El formato reemplaza la variante de artículos completos en ambas colas: hay que reconstruir las
+imágenes de cliente, gateway, filtro y lector juntas.
+
+## CSV para debug
+
+El exportador original sigue disponible de forma opcional:
+
+```sh
+MAX_ROWS=5 FILES_PER_LANGUAGE=1 docker compose run --rm dataset-downloader
+```
+
+Este script conserva la exportación original y genera `input/articles.csv` con
+las columnas originales del Parquet, sin encabezado ni índice. La descarga se hace
+con KaggleHub directamente a `input/`. El CSV es opcional para inspección. Sigue siendo una herramienta de inspección y debug.
+El cliente descarga y procesa los Parquet directamente, o usa los locales si
+se indica `INPUT_DIR` o `INPUT_FILE`, el CSV exportado no es su entrada.

@@ -1,29 +1,43 @@
-import io
-import os
-import csv
 import base64
+import csv
+from contextlib import closing
 import hashlib
+import logging
 import mimetypes
+import os
 import re
 import signal
 import socket
-import logging
 import threading
-
+import uuid
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from common import message_protocol
+from services.client.dataset import read_records
 
 SERVER_PORT = int(os.environ["SERVER_PORT"])
 SERVER_HOST = os.environ["SERVER_HOST"]
-BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "100"))
-INPUT_FILE = os.environ.get("INPUT_FILE", "input/articles.csv")
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", message_protocol.DEFAULT_BATCH_SIZE))
+MAX_ROWS = int(os.environ.get("MAX_ROWS", message_protocol.DEFAULT_MAX_ROWS))
+INPUT_FILE = os.environ.get("INPUT_FILE")
 OUTPUT_FILE = os.environ.get("OUTPUT_FILE", "output/result.csv")
 OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", str(Path(OUTPUT_FILE).parent)))
+CLIENT_ID = os.environ.get("CLIENT_ID") or f"client_{uuid.uuid4().hex}"
+
+if not re.fullmatch(r"[A-Za-z0-9_-]+", CLIENT_ID):
+    raise ValueError("CLIENT_ID must contain only letters, digits, underscores and hyphens")
 
 
-def save_image(image_dir: Path, article_url: str, image_url: str, content_type: str, encoded_image: str) -> str:
+def save_image(
+    image_dir: Path,
+    article_url: str,
+    image_url: str,
+    content_type: str,
+    encoded_image: str,
+) -> str:
+    """Guarda la imagen recibida y devuelve su ruta relativa al directorio de salida."""
+
     image_bytes = base64.b64decode(encoded_image, validate=True)
     image_name = unquote(urlsplit(article_url).path.rsplit("/", 1)[-1])
     image_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", image_name)
@@ -33,12 +47,16 @@ def save_image(image_dir: Path, article_url: str, image_url: str, content_type: 
 
     image_path = Path(image_name)
     suffix = Path(unquote(urlsplit(image_url).path)).suffix
+
     if not suffix and content_type:
         suffix = mimetypes.guess_extension(content_type, strict=False) or ""
+
         if content_type.lower() == "image/svg+xml":
             suffix = ".svg"
+
         elif content_type.lower() == "image/jpeg":
             suffix = ".jpg"
+
     if not suffix:
         suffix = ".bin"
 
@@ -50,49 +68,54 @@ def save_image(image_dir: Path, article_url: str, image_url: str, content_type: 
     return (Path("images") / unique_name).as_posix()
 
 
-def read_records(input_file):
-    """Lee el CSV incrementalmente y conserva todas las celdas de cada registro."""
-    csv.field_size_limit(message_protocol.MAX_PAYLOAD_SIZE - message_protocol.MAX_PREFIX_LENGTH)
+def read_batches(input_file: str | None, batches: int, stop=None, max_rows=None):
+    """Prepara un único batch de artículos completos para ambas ramas."""
 
-    with open(input_file, encoding="utf-8", newline="") as csvfile:
-        for row in csv.reader(csvfile, strict=True):
-            record = io.StringIO(newline="")
-            csv.writer(record).writerow(row)
-            yield record.getvalue()
+    if not message_protocol.MIN_BATCH_RECORDS <= batches <= message_protocol.MAX_BATCH_RECORDS:
+        raise ValueError(
+            f"BATCH_SIZE must be between {message_protocol.MIN_BATCH_RECORDS} "
+            f"and {message_protocol.MAX_BATCH_RECORDS}"
+        )
 
-def read_batches(input_file: str, batches: int):
-    """Agrupa registros respetando la cantidad y el límite de bytes del protocolo."""
-    if batches <= 0:
-        raise ValueError("BATCH_SIZE must be greater than zero")
+    limit = message_protocol.internal.batch_payload_limit()
 
-    batch = []
+    if limit < 1:
+        raise ValueError("BATCH_BYTES and transport limits must allow a payload")
+
+    pending = []
     batch_size = 0
 
-    for record in read_records(input_file):
-        record_size = message_protocol.batching.batch_payload_size([record])
+    with closing(read_records(input_file, stop, batch_size=batches, max_rows=max_rows)) as records:
+        for values in records:
+            record = message_protocol.articles.encode_columns(values)
+            size = message_protocol.MAX_PREFIX_LENGTH + len(record)
 
-        if record_size > message_protocol.MAX_PAYLOAD_SIZE:
-            raise ValueError(
-                f"Message length exceeds maximum payload size of {message_protocol.MAX_PAYLOAD_SIZE} bytes"
-            )
+            if size > limit:
+                raise ValueError(f"Article exceeds batch byte limit {limit}")
 
-        if batch and (
-            len(batch) >= batches or batch_size + record_size > message_protocol.MAX_PAYLOAD_SIZE
-        ):
-            yield batch
-            batch = []
-            batch_size = 0
+            if pending and (len(pending) >= batches or batch_size + size > limit):
+                # El artículo actual se agrega al siguiente batch si se alcanzó un límite.
+                yield pending
+                pending = []
+                batch_size = 0
 
-        batch.append(record)
-        batch_size += record_size
+            pending.append(record)
+            batch_size += size
 
-    if batch:
-        yield batch
+            if len(pending) == batches:
+                yield pending
+                pending = []
+                batch_size = 0
+
+    if pending:
+        yield pending
+
 
 class Client:
 
     def __init__(self):
         """Inicializa el estado compartido por los threads de envío y recepción."""
+
         self.server_socket = None
         self.stop = threading.Event()
         self.sent_all = False
@@ -102,36 +125,41 @@ class Client:
 
     def handle_sigterm(self, _signum, _frame):
         """Detiene ambos threads cerrando la conexión ante SIGTERM."""
+
         self.terminated = True
         self.stop.set()
         self.disconnect()
 
     def connect(self):
         """Abre la conexión TCP que comparten ambos threads."""
+
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.connect((SERVER_HOST, SERVER_PORT))
 
     def fail(self, exc):
         """Informa el error y desbloquea al otro thread cerrando el socket."""
+
         if not self.stop.is_set():
             logging.error("Client error: %s", exc)
 
         self.stop.set()
         self.disconnect()
 
-    def send_batches(self, input_file, batch_size):
-        """Envía el CSV configurado por batches y un único EOF."""
-        try:
-            for batch in read_batches(input_file, batch_size):
-                if self.stop.is_set():
-                    return
+    def send_batches(self, input_file, batch_size, max_rows=None):
+        """Envía artículos completos una sola vez y cierra la subida con un EOF."""
 
-                message_protocol.external.send_message(
-                    self.server_socket,
-                    message_protocol.batching.batch_messages(batch),
-                    message_protocol.OPCODE_DATA,
-                    len(batch),
-                )
+        try:
+            with closing(read_batches(input_file, batch_size, self.stop, max_rows)) as batches:
+                for batch in batches:
+                    if self.stop.is_set():
+                        return
+
+                    message_protocol.external.send_message(
+                        self.server_socket,
+                        message_protocol.batching.batch_messages(batch),
+                        message_protocol.OPCODE_DATA,
+                        len(batch),
+                    )
 
             if not self.stop.is_set():
                 message_protocol.external.send_message(
@@ -144,6 +172,8 @@ class Client:
 
     def receive_results(self, output_dir):
         """Lee DATA con filas 'consulta,resultado' hasta el EOF global del Gateway."""
+
+        csv.field_size_limit(message_protocol.MAX_PAYLOAD_SIZE)
         files = {}
 
         try:
@@ -179,6 +209,7 @@ class Client:
 
                     if job == "2":
                         fields = next(csv.reader([message]))
+
                         if len(fields) != 6:
                             raise ValueError("Invalid image result format")
 
@@ -206,7 +237,8 @@ class Client:
                 file.close()
 
     def disconnect(self):
-        """Desbloquea operaciones y cierra el socket; permite llamadas repetidas."""
+        """Desbloquea operaciones y cierra el socket permitiendo llamadas repetidas."""
+
         server_socket = self.server_socket
         self.server_socket = None
 
@@ -220,15 +252,19 @@ class Client:
             finally:
                 server_socket.close()
 
-    def run(self, input_dir, output_dir, batch_size):
-        """Inicia ambos threads y espera su fin; confirma archivos sólo al completar."""
+    def run(self, input_file, output_dir, batch_size, max_rows=None):
+        """Inicia ambos threads y confirma los archivos cuando finalizan correctamente."""
+
         threads = []
 
         try:
+            output_dir = Path(output_dir) / CLIENT_ID / f"run_{uuid.uuid4().hex}"
+            output_dir.mkdir(parents=True, exist_ok=False)
+            logging.info("Client %s output: %s", CLIENT_ID, output_dir)
             self.connect()
             threads = [
                 threading.Thread(
-                    target=self.send_batches, args=(input_dir, batch_size)
+                    target=self.send_batches, args=(input_file, batch_size, max_rows)
                 ),
                 threading.Thread(
                     target=self.receive_results, args=(output_dir,)
@@ -260,15 +296,17 @@ class Client:
 
             signal.signal(signal.SIGTERM, self.previous_sigterm)
 
+
 def main():
-    """Envía los CSV y recibe resultados en paralelo sobre la misma conexión."""
+    """Lee y envía Parquet mientras recibe resultados sobre la misma conexión."""
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(threadName)s: %(message)s"
     )
 
     try:
-        return Client().run(INPUT_FILE, OUTPUT_DIR, BATCH_SIZE)
+        return Client().run(INPUT_FILE, OUTPUT_DIR, BATCH_SIZE, MAX_ROWS)
 
     except Exception as exc:
         logging.error("Failed to run client: %s", exc)

@@ -13,14 +13,15 @@ ID = int(os.environ["ID"])
 FILTER_PREFIX = os.environ["FILTER_PREFIX"]
 GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
 FILTER_QUEUE = os.environ["FILTER_QUEUE"]
-IMAGE_DOWNLOADER_QUEUE = os.environ["IMAGE_DOWNLOADER_QUEUE"] 
+IMAGE_DOWNLOADER_QUEUE = os.environ["IMAGE_DOWNLOADER_QUEUE"]
+
 
 class Filter:
     _TIMEOUT = 5.0
 
     def __init__(self):
         signal.signal(signal.SIGTERM, self._sigterm_handler)
-        
+
         self.publisher_downloader = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
             queues=[IMAGE_DOWNLOADER_QUEUE],
@@ -67,19 +68,24 @@ class Filter:
             logging.warning("Failed to stop the input exchange consumer during shutdown", exc_info=True)
 
         logging.info(f"Waiting up to {self._TIMEOUT} seconds for one active thread to stop")
+
         if self.exchange_consumer:
             remaining = max(0.0, deadline - time.time())
+
             if remaining > 0:
                 self.exchange_consumer.join(timeout=remaining)
+
             if self.exchange_consumer.is_alive():
                 logging.warning(f"Shutdown timed out with still one active threads")
+
             self.input_exchange.close()
 
-        finish = ( 
+        finish = (
             self.publisher_downloader.stop(timeout=max(0.0, deadline - time.time())) or
             self.publisher_gateway.stop(timeout=max(0.0, deadline - time.time())) or
             self.publisher_filter.stop(timeout=max(0.0, deadline - time.time()))
         )
+
         if finish:
             logging.warning(f"Shutdown timed out with still active threads")
         else:
@@ -112,7 +118,7 @@ class Filter:
                         message=[filter_message]
                     )
                 )
-                
+
             if wikipedia_article < 2020 and (
                 wikipedia_article.section_contains("biography") or wikipedia_article.section_contains("biographie")
             ):
@@ -133,14 +139,14 @@ class Filter:
 
     def _process_eof(self, req_id: int, _: int, expected_messages: int):
         logging.info(f"[{req_id}] - Receive the end of the articles")
-        
+
         tracker = self.message_tracker.setdefault(req_id, entity.message_tracker.MessageTracker())
         tracker.record_expected(expected_messages)
 
         if FILTER_AMOUNT == 1:
             if tracker.all_recv():
                 logging.info(f"[{req_id}] - All articles have been received !!!")
-                
+
                 self.publisher_gateway.publish_queue(
                     queue=f"{GATEWAY_PREFIX}_1",
                     message=message_protocol.internal.serialize(
@@ -164,6 +170,7 @@ class Filter:
                     tracker.expected_messages,
                     tracker.recv_messages
                 )
+
             del self.message_tracker[req_id]
             return
 
@@ -198,7 +205,7 @@ class Filter:
 
     def _process_ok(self, req_id: int, _: int, messages: list):
         recv_messages, sent_messages = messages
-        
+
         tracker = self.message_tracker.setdefault(req_id, entity.message_tracker.MessageTracker())
         tracker.record_peer(recv_messages, sent_messages)
 
@@ -248,21 +255,32 @@ class Filter:
         del self.message_tracker[req_id]
 
     def _process_message(self, message, ack, nack):
-        opcode, *args = message_protocol.internal.deserialize(message)
-        try:         
+        """Valida la proyección del filtro antes de procesar datos o mensajes de control."""
+
+        try:
+            opcode, req_id, batches, payload = message_protocol.internal.deserialize(message)
+
             if opcode == message_protocol.OPCODE_DATA:
-                self._filter_message(*args)
+                articles = message_protocol.articles.decode_batch(
+                    payload, batches, message_protocol.articles.FILTER_COLUMNS
+                )
+                self._filter_message(req_id, batches, articles)
+
             elif opcode == message_protocol.OPCODE_EOF:
-                self._process_eof(*args)
+                self._process_eof(req_id, batches, payload)
+
             elif opcode == message_protocol.OPCODE_PREPARE:
-                self._process_prepare(*args)
+                self._process_prepare(req_id, batches, payload)
+
             elif opcode == message_protocol.OPCODE_OK:
-                self._process_ok(*args)
+                self._process_ok(req_id, batches, payload)
+
             elif opcode == message_protocol.OPCODE_COMMIT:
-                self._process_commit(*args)
+                self._process_commit(req_id, batches, payload)
+
             ack()
         except Exception:
-            logging.exception(f"An error occurred")
+            logging.exception("An error occurred")
             nack()
 
     def start(self):
@@ -278,10 +296,12 @@ class Filter:
         except:
             if self.is_running:
                 raise
+
             logging.warning("Interrupted by the SIGTERM")
         finally:
             self.input_queue.close()
             self._wait_for_threads()
+
 
 def main():
     logging.basicConfig(

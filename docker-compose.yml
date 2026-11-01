@@ -15,7 +15,6 @@ services:
       MAX_ROWS: ${MAX_ROWS:-0}
     volumes:
     - ./input:/app/input
-    - kaggle-cache:/cache/kagglehub
   rabbitmq:
     build:
       context: ./src/services/rabbitmq
@@ -42,13 +41,13 @@ services:
       HOST: gateway
       PORT: '5000'
       JOBS: '4'
-      BATCH_SIZE: '50'
       MOM_HOST: rabbitmq
+      BATCH_BYTES: ${BATCH_BYTES:-8388608}
       GATEWAY_PREFIX: gateway
       FILTER_QUEUE: filter_queue
       WORD_READER_QUEUE: word_reader_queue
     ports:
-    - 5000:5000
+    - 5001:5000
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -68,7 +67,6 @@ services:
       MAX_ROWS: ${MAX_ROWS:-0}
     volumes:
     - ./input:/app/input
-    - kaggle-cache:/cache/kagglehub
   filter_0:
     build:
       context: ./src/
@@ -78,6 +76,7 @@ services:
       PYTHONUNBUFFERED: '1'
       ID: '0'
       MOM_HOST: rabbitmq
+      BATCH_BYTES: ${BATCH_BYTES:-8388608}
       GATEWAY_PREFIX: gateway
       FILTER_AMOUNT: '3'
       FILTER_PREFIX: filter
@@ -95,6 +94,7 @@ services:
       PYTHONUNBUFFERED: '1'
       ID: '1'
       MOM_HOST: rabbitmq
+      BATCH_BYTES: ${BATCH_BYTES:-8388608}
       GATEWAY_PREFIX: gateway
       FILTER_AMOUNT: '3'
       FILTER_PREFIX: filter
@@ -112,6 +112,7 @@ services:
       PYTHONUNBUFFERED: '1'
       ID: '2'
       MOM_HOST: rabbitmq
+      BATCH_BYTES: ${BATCH_BYTES:-8388608}
       GATEWAY_PREFIX: gateway
       FILTER_AMOUNT: '3'
       FILTER_PREFIX: filter
@@ -143,12 +144,19 @@ services:
     container_name: client_0
     environment:
       PYTHONUNBUFFERED: '1'
-      INPUT_FILE: /app/input/articles.csv
+      CLIENT_ID: client_0
+      OUTPUT_DIR: /app/output
+      DOWNLOAD_DIR: /app/input
+      FILES_PER_LANGUAGE: ${FILES_PER_LANGUAGE:-5}
+      WIKI_LANGUAGES: ${WIKI_LANGUAGES:-en,fr}
+      MAX_ROWS: ${MAX_ROWS:-1000}
       SERVER_HOST: gateway
       SERVER_PORT: '5000'
-      BATCH_SIZE: '100'
+      BATCH_SIZE: ${BATCH_SIZE:-50}
+      BATCH_BYTES: ${BATCH_BYTES:-8388608}
+      PARQUET_BATCH_SIZE: ${PARQUET_BATCH_SIZE:-${BATCH_SIZE:-50}}
     volumes:
-    - ./input:/app/input:ro
+    - ./input:/app/input
     - ./output:/app/output
     depends_on:
       gateway:
@@ -160,6 +168,7 @@ services:
     container_name: word_reader_0
     environment:
       MOM_HOST: rabbitmq
+      BATCH_BYTES: ${BATCH_BYTES:-8388608}
       WORD_READER_OUTPUT_QUEUE: word_reader_queue
       WORD_READER_PREFIX: word_reader
       WORD_READER_AMOUNT: '4'
@@ -178,6 +187,7 @@ services:
     container_name: word_reader_1
     environment:
       MOM_HOST: rabbitmq
+      BATCH_BYTES: ${BATCH_BYTES:-8388608}
       WORD_READER_OUTPUT_QUEUE: word_reader_queue
       WORD_READER_PREFIX: word_reader
       WORD_READER_AMOUNT: '4'
@@ -196,6 +206,7 @@ services:
     container_name: word_reader_2
     environment:
       MOM_HOST: rabbitmq
+      BATCH_BYTES: ${BATCH_BYTES:-8388608}
       WORD_READER_OUTPUT_QUEUE: word_reader_queue
       WORD_READER_PREFIX: word_reader
       WORD_READER_AMOUNT: '4'
@@ -214,6 +225,7 @@ services:
     container_name: word_reader_3
     environment:
       MOM_HOST: rabbitmq
+      BATCH_BYTES: ${BATCH_BYTES:-8388608}
       WORD_READER_OUTPUT_QUEUE: word_reader_queue
       WORD_READER_PREFIX: word_reader
       WORD_READER_AMOUNT: '4'
@@ -315,5 +327,3 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
-volumes:
-  kaggle-cache: null

@@ -53,7 +53,6 @@ def build_compose(
             },
             "volumes": [
                 "./input:/app/input",
-                "kaggle-cache:/cache/kagglehub",
             ],
         },
         "rabbitmq": {
@@ -85,7 +84,6 @@ def build_compose(
                 "HOST": "gateway",
                 "PORT": "5000",
                 "JOBS": "4",
-                "BATCH_SIZE": "50",
                 "MOM_HOST": "rabbitmq",
                 "GATEWAY_PREFIX": "gateway",
                 "FILTER_QUEUE": "filter_queue",
@@ -111,7 +109,6 @@ def build_compose(
             },
             "volumes": [
                 "./input:/app/input",
-                "kaggle-cache:/cache/kagglehub",
             ],
         },
     }
@@ -171,13 +168,19 @@ def build_compose(
             "container_name": service_name,
             "environment": {
                 "PYTHONUNBUFFERED": "1",
-                "INPUT_FILE": "/app/input/articles.csv",
+                "CLIENT_ID": service_name,
+                "OUTPUT_DIR": "/app/output",
+                "DOWNLOAD_DIR": "/app/input",
+                "FILES_PER_LANGUAGE": "${FILES_PER_LANGUAGE:-5}",
+                "WIKI_LANGUAGES": "${WIKI_LANGUAGES:-en,fr}",
+                "MAX_ROWS": "${MAX_ROWS:-1000}",
                 "SERVER_HOST": "gateway",
                 "SERVER_PORT": "5000",
-                "BATCH_SIZE": "100",
+                "BATCH_SIZE": "${BATCH_SIZE:-50}",
+                "PARQUET_BATCH_SIZE": "${PARQUET_BATCH_SIZE:-${BATCH_SIZE:-50}}",
             },
             "volumes": [
-                "./input:/app/input:ro",
+                "./input:/app/input",
                 "./output:/app/output",
             ],
             "depends_on": {
@@ -257,11 +260,13 @@ def build_compose(
             },
         }
 
+    # El presupuesto de DATA solo se aplica a los enlaces cliente-gateway-workers.
+    for name, service in services.items():
+        if name == "gateway" or name.startswith(("client_", "filter_", "word_reader_")):
+            service["environment"]["BATCH_BYTES"] = "${BATCH_BYTES:-8388608}"
+
     compose = {
         "services": services,
-        "volumes": {
-            "kaggle-cache": None,
-        },
     }
 
     return yaml.safe_dump(

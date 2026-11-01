@@ -2,8 +2,8 @@ FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app/src \
-    KAGGLEHUB_CACHE=/cache/kagglehub
+    PYTHONPATH=/app:/app/src \
+    KAGGLEHUB_CACHE=/app/input
 
 WORKDIR /app
 

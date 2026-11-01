@@ -32,17 +32,21 @@ def tokenize(abstract: str, language: str | None) -> list[str]:
     stopwords = STOPWORDS.get(language or "", set())
     return [w for w in WORD_RE.findall(abstract.lower()) if w not in stopwords]
 
+
 def language_counts(language: str | None) -> tuple[int, int] | None:
     if language == "en":
         return 1, 0
+
     if language == "fr":
         return 0, 1
+
     return None
+
 
 class WordReader:
     def __init__(self):
         signal.signal(signal.SIGTERM, self._sigterm_handler)
- 
+
         self.is_running = True
 
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
@@ -70,7 +74,7 @@ class WordReader:
     def _sigterm_handler(self, _signum, _frame):
         logging.info("Shutdown signal received, stopping consumer...")
         self.is_running = False
- 
+
         try:
             self.input_queue.stop_consuming()
         except Exception:
@@ -79,26 +83,30 @@ class WordReader:
         self.barrier.stop_consuming()
 
     def process_message(self, message, ack, nack):
+        """Decodifica la proyección del lector y registra los artículos procesados."""
+
         try:
-            opcode, req_id, _batches, payload = message_protocol.internal.deserialize(message)
- 
+            opcode, req_id, batches, payload = message_protocol.internal.deserialize(message)
+
             if opcode == message_protocol.OPCODE_DATA:
+                payload = message_protocol.articles.decode_batch(
+                    payload, batches, message_protocol.articles.READER_COLUMNS
+                )
                 self._handle_articles(req_id, payload)
                 self.barrier.record_articles(req_id, len(payload))
                 logging.debug("req_id=%s: processed %s articles", req_id, len(payload))
-                # process_message, rama DATA, después de procesar el batch
-                
+
             elif opcode == message_protocol.OPCODE_EOF:
                 logging.info(f"Received EOF for req_id: {req_id}, articles sent: {payload}")
                 self.barrier.on_eof(req_id, payload)
             else:
                 logging.warning(f"Unexpected opcode for req_id {req_id}: {opcode}")
- 
+
             ack()
         except Exception:
             logging.exception("Error processing message")
             nack()
- 
+
     def _handle_articles(self, req_id: int, articles: list[list]):
         words_by_shard: dict[int, dict[str, list[int]]] = {}
         join_batch = []
@@ -106,12 +114,12 @@ class WordReader:
 
         for article in articles:
             abstract, url, date_modified, in_language = article
- 
+
             words = tokenize(abstract or "", in_language)
- 
+
             self._collect_unique_words(req_id, words, in_language, words_by_shard)
             self._collect_word_amount(url, len(words), date_modified, join_batch, amount_batch)
- 
+
         self._send_unique_words(req_id, words_by_shard)
         self._send_word_amounts(req_id, join_batch, amount_batch)
 
@@ -119,23 +127,25 @@ class WordReader:
     @staticmethod
     def _collect_unique_words(req_id, words, language, words_by_shard):
         counts = language_counts(language)
+
         if counts is None:
             return
- 
+
         en_count, fr_count = counts
         for word in set(words):
             shard_words = words_by_shard.setdefault(hashing.shard_for(SUM_WORDS_COUNT , req_id, word), {})
             entry = shard_words.setdefault(word, [0, 0])
             entry[0] += en_count
             entry[1] += fr_count
- 
+
     @staticmethod
     def _collect_word_amount(url, amount, date_modified, join_batch, amount_batch):
         if date_modified is None:
             logging.warning(f"Article without date_modified: {url}")
             return
- 
+
         year = datetime.strptime(date_modified, DATE_FORMAT).year
+
         if year >= CUTOFF_YEAR:
             join_batch.append([url, amount])
         else:
@@ -161,6 +171,7 @@ class WordReader:
                     req_id=req_id, batches=len(join_batch), message=join_batch,
                 ),
             )
+
         if amount_batch:
             self.publisher.publish_queue(
                 SUM_AMOUNT_QUEUE,
@@ -193,12 +204,13 @@ class WordReader:
         logging.info("Closing queues...")
         self.barrier.close()
         self.publisher.stop()
-        
+
         try:
             self.input_queue.close()
         except Exception:
             logging.exception("Error closing queue")
- 
+
+
 def main():
     logging.basicConfig(
         level=logging.INFO,
