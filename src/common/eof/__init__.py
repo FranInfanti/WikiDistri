@@ -1,1 +1,0 @@
-from .eof_barrier import EofBarrier
