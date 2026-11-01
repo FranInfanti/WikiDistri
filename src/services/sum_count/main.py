@@ -4,7 +4,6 @@ import logging
 import heapq
 
 from common import middleware, message_protocol, rabbitmq
-from common.eof.eof_barrier import EofBarrier
 
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
 
@@ -23,7 +22,7 @@ JOIN_TOP_QUEUE = os.environ["JOIN_TOP_QUEUE"]
 JOIN_TOP_COUNT = int(os.environ["JOIN_TOP_COUNT"])
 TOP_SIZE = int(os.environ.get("TOP_SIZE", 20))
 
-class Sum:
+class SumCount:
     def __init__(self):
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
@@ -42,12 +41,13 @@ class Sum:
             queues=[self.gateway_queue_name, *self.join_top_queue_names],
         )
 
-        self.barrier = EofBarrier(
+        self.coordinator = rabbitmq.RabbitCoordinator(
+            id=ID,
             host=MOM_HOST,
             prefix=SUM_COUNT_PREFIX,
-            instance_id=ID,
             instances=SUM_WORDS_COUNT,
-            on_all_received=self._send_final_eof,
+            on_all_recv=self._on_recv_all,
+            on_commit=self._finish_request, 
         )
 
     def _sigterm_handler(self, _signum, _frame):
@@ -58,8 +58,6 @@ class Sum:
             self.input_queue.stop_consuming()
         except Exception:
             logging.exception("Error stopping the consumer")
-
-        self.barrier.stop_consuming()
 
     def _gateway_send(self, data: bytes):
         self.publisher.publish_queue(self.gateway_queue_name, data)
@@ -72,7 +70,7 @@ class Sum:
                 self._accumulate(req_id, payload)
             elif opcode == message_protocol.OPCODE_EOF:
                 logging.info(f"Received EOF for req_id: {req_id}")
-                self._finish_request(req_id)
+                self.coordinator.on_eof(req_id=req_id, expected_messages=payload)
             else:
                 logging.warning(f"Unexpected opcode for req_id {req_id}: {opcode}")
 
@@ -89,6 +87,8 @@ class Sum:
             counts[0] += en_count
             counts[1] += fr_count
 
+        self.coordinator.record_recv(req_id=req_id)
+
     def _finish_request(self, req_id: int):
         request_words = self.words.pop(req_id, {})
 
@@ -96,11 +96,6 @@ class Sum:
         logging.info(f"req_id={req_id}: {sent} common words out of {len(request_words)}")
 
         self._send_partial_top(req_id, request_words)
-
-        self.barrier.record_articles(req_id, 1)
-
-        if ID == COORDINATOR_ID:
-            self.barrier.on_eof(req_id, SUM_WORDS_COUNT)
 
     def _send_partial_top(self, req_id: int, request_words: dict):
         top = heapq.nsmallest(
@@ -149,20 +144,21 @@ class Sum:
             )
         )
 
-    def _send_final_eof(self, req_id: int, _sent_total: int = 0):
-        """Called by the barrier, in the coordinator only, once every Sum finished req_id."""
-        logging.info(f"req_id={req_id}: all Sums finished, sending the EOF to the gateway")
-        self._gateway_send(
-            message_protocol.internal.serialize(
+    def _on_recv_all(self, req_id: int, _: list):
+        logging.debug(f"Sending OPCODE_EOF message for req_id={req_id}")
+
+        self.publisher.publish_queue(
+            queue=f"{GATEWAY_PREFIX}_3",
+            message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_EOF,
-                req_id=req_id,
+                req_id=req_id
             )
         )
 
     def start(self):
         try:
             logging.info(f"Sum {ID} waiting for messages...")
-            self.barrier.start()
+            self.coordinator.start()
             self.input_queue.start_consuming(self.process_message)
         except Exception:
             if self.is_running:
@@ -171,7 +167,7 @@ class Sum:
             self._close()
 
     def _close(self):
-        self.barrier.close()
+        self.coordinator.stop()  
         self.publisher.stop()
 
         try:
@@ -187,7 +183,7 @@ def main():
     logging.getLogger("pika").propagate = False
 
     try:
-        Sum().start()
+        SumCount().start()
     except Exception:
         logging.exception("An unexpected error has occurred")
         return 2

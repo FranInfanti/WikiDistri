@@ -31,13 +31,14 @@ class SumAmount:
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST, queues=self.average_queue_names
         )
-        self.barrier = eof.EofBarrier(
+
+        self.coordinator = rabbitmq.RabbitCoordinator(
+            id=ID,
             host=MOM_HOST,
             prefix=SUM_AMOUNT_PREFIX,
-            instance_id=ID,
             instances=SUM_AMOUNT_COUNT,
-            on_all_received=self._on_all_received,
-            on_commit=self._flush,
+            on_all_recv=self._on_recv_all,
+            on_commit=self._flush, 
         )
 
     def _sigterm_handler(self, _signum, _frame):
@@ -55,7 +56,7 @@ class SumAmount:
         logging.info(f"Waiting up to {self._TIMEOUT} seconds for active threads to finish")
 
         remaining = max(0.0, deadline - time.time())
-        self.barrier.close(timeout=remaining)
+        self.coordinator.stop(timeout=remaining)
 
         remaining = max(0.0, deadline - time.time())
         if remaining > 0:
@@ -78,7 +79,7 @@ class SumAmount:
                 acc[0] += words
                 acc[1] += 1
 
-        self.barrier.record_articles(req_id, len(entries))
+        self.coordinator.record_recv(req_id)
 
     def _flush(self, req_id: int):
         with self.state_lock:
@@ -95,7 +96,7 @@ class SumAmount:
         )
         logging.debug(f"req_id={req_id}: partial sent ({words} words, {articles} articles)")
 
-    def _on_all_received(self, req_id: int, _: int = 0):
+    def _on_recv_all(self, req_id: int, _: int = 0):
         self._flush(req_id)
 
     def process_message(self, message, ack, nack):
@@ -107,7 +108,7 @@ class SumAmount:
                 self._accumulate(req_id, payload)
             elif opcode == message_protocol.OPCODE_EOF:
                 logging.debug(f"Received an OPCODE_EOF message from req_id={req_id}")
-                self.barrier.on_eof(req_id, payload)
+                self.coordinator.on_eof(req_id, payload)
             else:
                 logging.warning(f"Unexpected OPCODE={opcode} received for req_id={req_id}")
             ack()
@@ -118,7 +119,7 @@ class SumAmount:
     def start(self):
         try:
             logging.info(f"Waiting to receive messages...")
-            self.barrier.start()
+            self.coordinator.start()
             self.input_queue.start_consuming(self.process_message)
         except Exception:
             if self.is_running:
