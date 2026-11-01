@@ -8,6 +8,7 @@ class MessageTracker:
 
     sent_messages: dict[str, int] = field(default_factory=dict)
     peers_sent: dict[str, list[int]] = field(default_factory=dict)
+    done_peers: int = 0
 
     def record_recv(self):
         self.recv_messages += 1
@@ -49,3 +50,9 @@ class MessageTracker:
             )
             for key in keys
         ]
+
+    def record_done(self):
+        self.done_peers += 1
+
+    def all_done(self, amount: int):
+        return self.done_peers == amount

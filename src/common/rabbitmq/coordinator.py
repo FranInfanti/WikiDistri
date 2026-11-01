@@ -15,13 +15,15 @@ class RabbitCoordinator:
         host: str,
         prefix: str,
         instances: int,
-        on_all_recv: Callable
+        on_all_recv: Callable,
+        on_commit: Callable | None = None
     ):
         self.id = id
         self.host = host
         self.prefix = prefix
         self.instances = instances
         self.on_all_recv = on_all_recv
+        self.on_commit = on_commit
         self.input_exchange = middleware.MessageMiddlewareExchangeRabbitMQ(
             host=self.host,
             exchange_name=self.prefix,
@@ -80,7 +82,7 @@ class RabbitCoordinator:
                     )
                 )
                 
-                self.on_all_recv(req_id, tracker.sent_by_key())
+                self._flush(req_id)
             else:
                 logging.warning(f"There are still messages that have not been processed for req_id={req_id}")
                 tracker.reset_peers()
@@ -93,9 +95,33 @@ class RabbitCoordinator:
                     )
                 )
 
-    def _process_commit(self, req_id: int, *_):
+    def _process_commit(self, req_id: int, _: int, id: int):
         logging.debug(f"Receive OPCODE_COMMIT message for req_id={req_id}")
-        self.message_tracker.pop(req_id)
+        self._flush(req_id)
+        self.message_tracker.pop(req_id, None) 
+        self.publisher.publish_exchange(
+            message=message_protocol.internal.serialize(
+                opcode=message_protocol.OPCODE_DONE,
+                req_id=req_id,
+                batches=1,
+                message=self.id,
+            ),
+            exchange_id=id,
+        )
+    
+    def _process_done(self, req_id: int, *_):
+        logging.debug(f"Receive OPCODE_DONE message for req_id={req_id}")
+        tracker = self.message_tracker.get(req_id)
+        if tracker is None:
+            return
+        tracker.record_done()
+        if tracker.all_done(self.instances - 1):
+            self.message_tracker.pop(req_id, None)
+            self.on_all_recv(req_id, tracker.sent_by_key())
+
+    def _flush(self, req_id: int):
+        if self.on_commit:
+            self.on_commit(req_id)
 
     def _process_message(self, message, ack, nack):
         opcode, *args = message_protocol.internal.deserialize(message)
@@ -106,6 +132,8 @@ class RabbitCoordinator:
                 self._process_ok(*args)
             elif opcode == message_protocol.OPCODE_COMMIT:
                 self._process_commit(*args)
+            elif opcode == message_protocol.OPCODE_DONE:
+                self._process_done(*args)
             else:
                 logging.warning(f"Unexpected OPCODE={opcode} received")
             ack()
@@ -168,6 +196,8 @@ class RabbitCoordinator:
         if self.instances == 1:
             if tracker.all_recv():
                 logging.info(f"All messages have been processed for req_id={req_id}")
+                self._flush(req_id)
+                self.message_tracker.pop(req_id, None)
                 self.on_all_recv(req_id, tracker.sent_by_key())
             else:
                 logging.critical(f"Message count mismatch for req_id=%s; Expected %s, received %s",
