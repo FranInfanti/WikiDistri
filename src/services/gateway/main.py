@@ -153,40 +153,45 @@ class Gateway:
         for queue in (FILTER_QUEUE, WORD_READER_QUEUE):
             self.publisher.publish_queue(queue=queue, message=message)
 
-    def _publish_records(self, queue, req_id, records):
-        max_size = message_protocol.MAX_RABBITMQ_MESSAGE_SIZE
-        batch, size = [], ENVELOPE_OVERHEAD
+    def _publish_records(self, queue: str, req_id: int, records: list):
+        max_message_size = message_protocol.MAX_RABBITMQ_MESSAGE_SIZE
+        batch, batch_size = [], ENVELOPE_OVERHEAD
 
         for record in records:
             record_size = len(json.dumps(record)) + 2
 
-            if batch and (len(batch) >= BATCH_SIZE or size + record_size > max_size):
-                self._publish_batch(queue, req_id, batch)
-                batch, size = [], ENVELOPE_OVERHEAD
+            if batch and (len(batch) >= BATCH_SIZE or batch_size + record_size > max_message_size):
+                self.publisher.publish_queue(
+                    queue=queue,
+                    message=message_protocol.internal.serialize(
+                        opcode=message_protocol.OPCODE_DATA,
+                        req_id=req_id,
+                        batches=len(batch),
+                        message=batch,
+                    ),
+                )
+                batch, batch_size = [], ENVELOPE_OVERHEAD
 
-            if ENVELOPE_OVERHEAD + record_size > max_size:
+            if ENVELOPE_OVERHEAD + record_size > max_message_size:
                 raise ValueError(
                     f"Serialized message for queue {queue}, req_id={req_id} exceeds "
-                    f"RabbitMQ's {max_size}-byte limit"
+                    f"RabbitMQ's {max_message_size}-byte limit"
                 )
 
             batch.append(record)
-            size += record_size
+            batch_size += record_size
 
         if batch:
-            self._publish_batch(queue, req_id, batch)
-
-    def _publish_batch(self, queue, req_id, batch):
-        self.publisher.publish_queue(
-            queue=queue,
-            message=message_protocol.internal.serialize(
-                opcode=message_protocol.OPCODE_DATA,
-                req_id=req_id,
-                batches=len(batch),
-                message=batch,
-            ),
-        )
-    
+            self.publisher.publish_queue(
+                queue=queue,
+                message=message_protocol.internal.serialize(
+                    opcode=message_protocol.OPCODE_DATA,
+                    req_id=req_id,
+                    batches=len(batch),
+                    message=batch,
+                ),
+            )
+ 
     def _publish_data(self, req_id: int, batches: int, payload: bytes):
         logging.debug(f"Upload {batches} messages for req_id={req_id}")
 
@@ -198,7 +203,7 @@ class Gateway:
             (FILTER_QUEUE, filter_records),
             (WORD_READER_QUEUE, reader_records),
         ):
-            self._publish_records(queue, req_id, records)
+            self._publish_records(queue=queue, req_id=req_id, records=records)
 
     def _upload(self, req_id: int, client_req: client.Client):
         logging.info("Started upload for req_id=%s", req_id)
