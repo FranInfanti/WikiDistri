@@ -117,7 +117,7 @@ class Gateway:
             try:
                 input_queue.stop_consuming_threadsafe()
             except Exception:
-                logging.exception("An error occurred while attempting to stop consuming from the input queue")
+                logging.warning("An error occurred while attempting to stop consuming from the input queue")
 
         with self.active_threads_lock:
             active_threads = list(self.active_threads.values())
@@ -146,7 +146,7 @@ class Gateway:
             try:
                 input_queue.close()
             except Exception:
-                logging.exception("An error occurred while attempting to close the input queue")
+                logging.warning("An error occurred while attempting to close the input queue")
 
         logging.info("All resources have been released; goodbye")
 
@@ -234,7 +234,7 @@ class Gateway:
                     )
         except Exception:
             if self.is_running:
-                logging.exception("Failed to upload data for req_id=%s", req_id)
+                logging.exception(f"Failed to upload data for req_id={req_id}")
             with self.active_threads_lock:
                 client_req.close()
                 self.clients_requests.pop(req_id, None)
@@ -348,8 +348,8 @@ class Gateway:
                         client_socket, _ = server_socket.accept()
                     except OSError:
                         if self.is_running:
+                            logging.critical("An unexpected error occurred while running the service", exc_info=True)
                             raise
-
                         logging.warning("Interrupted by the SIGTERM")
                         return
                     self._handle_client_request(client_socket)
@@ -365,9 +365,8 @@ def main():
     try:
         Gateway(HOST, PORT).start()
     except Exception:
-        logging.exception("An unexpected error occurred")
         return 2
     return 0
 
 if __name__ == "__main__":
-    main()
+    SystemExit(main())

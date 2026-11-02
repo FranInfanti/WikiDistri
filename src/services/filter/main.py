@@ -6,16 +6,17 @@ import logging
 from common import entity, message_protocol, middleware, rabbitmq
 
 MOM_HOST = os.environ["MOM_HOST"]
-FILTER_AMOUNT = int(os.environ["FILTER_AMOUNT"])
 
 ID = int(os.environ["ID"])
+FILTER_QUEUE = os.environ["FILTER_QUEUE"]
+FILTER_AMOUNT = int(os.environ["FILTER_AMOUNT"])
 FILTER_PREFIX = os.environ["FILTER_PREFIX"]
 GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
-FILTER_QUEUE = os.environ["FILTER_QUEUE"]
 IMAGE_DOWNLOADER_QUEUE = os.environ["IMAGE_DOWNLOADER_QUEUE"] 
 
 class Filter:
     _TIMEOUT = 10.0
+    _GATEWAY_QUEUE = f"{GATEWAY_PREFIX}_1"
 
     def __init__(self):
         signal.signal(signal.SIGTERM, self._sigterm_handler)
@@ -27,7 +28,7 @@ class Filter:
         )
         self.publisher_gateway = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
-            queues=[f"{GATEWAY_PREFIX}_1"],
+            queues=[self._GATEWAY_QUEUE],
         )
         self.coordinator = rabbitmq.RabbitCoordinator(
             id=ID,
@@ -66,15 +67,15 @@ class Filter:
         try:
             self.input_queue.close()
         except Exception:
-            logging.exception("An error occurred while attempting to close the input queue")
+            logging.warning("An error occurred while attempting to close the input queue")
 
         if timed_out:
-            logging.error("Shutdown timed out with active components: %s", ", ".join(timed_out))
+            logging.critical("Shutdown timed out with active components: %s", ", ".join(timed_out))
         else:
             logging.info("All resources have been released; goodbye")
 
     def _filter_message(self, req_id: int, _: int, messages: list[list]):
-        logging.debug(f"Received an OPCODE_DATA message from req_id={req_id}")
+        logging.debug(f"Received an OPCODE_DATA message for req_id={req_id}")
         
         for message in messages:
             name, url, date_modified, image, in_language, sections = message
@@ -88,11 +89,11 @@ class Filter:
             )
 
             if wikipedia_article.is_language("en") and wikipedia_article <= 2020:
-                logging.debug(f"Send message to Gateway for req_id={req_id}")
+                logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
                 
                 filter_message = wikipedia_article.to_list(url=True, date_modified=True)
                 self.publisher_gateway.publish_queue(
-                    queue=f"{GATEWAY_PREFIX}_1",
+                    queue=self._GATEWAY_QUEUE,
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_DATA,
                         req_id=req_id,
@@ -104,7 +105,8 @@ class Filter:
             if wikipedia_article < 2020 and (
                 wikipedia_article.section_contains("biography") or wikipedia_article.section_contains("biographie")
             ):
-                logging.debug(f"Send message to Image Downloader for req_id={req_id}")
+                
+                logging.debug(f"Sending OPCODE_DATA message to {IMAGE_DOWNLOADER_QUEUE} for req_id={req_id}")
                 
                 image_downloader_message = wikipedia_article.to_list(name=True, url=True, image=True)
                 self.publisher_downloader.publish_queue(
@@ -121,9 +123,9 @@ class Filter:
             self.coordinator.record_recv(req_id=req_id)
 
     def _on_recv_all(self, req_id: int, sent_messages: list):
-        logging.debug(f"Sending OPCODE_EOF message for req_id={req_id}")
+        logging.debug(f"Sending OPCODE_EOF message to {self._GATEWAY_QUEUE} for req_id={req_id}")
         self.publisher_gateway.publish_queue(
-            queue=f"{GATEWAY_PREFIX}_1",
+            queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_EOF,
                 req_id=req_id
@@ -138,6 +140,7 @@ class Filter:
         if key != IMAGE_DOWNLOADER_QUEUE:
             raise ValueError(f"Unknown key; expected: {IMAGE_DOWNLOADER_QUEUE}, received: {key}")
 
+        logging.debug(f"Sending OPCODE_EOF message to {IMAGE_DOWNLOADER_QUEUE} for req_id={req_id}")
         self.publisher_downloader.publish_queue(
             queue=IMAGE_DOWNLOADER_QUEUE,
             message=message_protocol.internal.serialize(
@@ -157,7 +160,7 @@ class Filter:
                 req_id, _, expected_messages = args
                 self.coordinator.on_eof(req_id=req_id, expected_messages=expected_messages)
             else:
-                logging.warning(f"Unexpected OPCODE={opcode} received")
+                logging.warning(f"Unexpected OPCODE received: {opcode}")
             ack()
         except Exception:
             logging.exception("An error occured while processing a message")
@@ -170,7 +173,7 @@ class Filter:
             self.input_queue.start_consuming(self._process_message)
         except:
             if self.is_running:
-                logging.critical(f"An error has occurred in the service")
+                logging.critical("An unexpected error occurred while running the service", exc_info=True)
                 raise
             logging.debug("Interrupted by the SIGTERM signal")
         finally:

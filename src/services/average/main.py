@@ -36,12 +36,10 @@ class Average:
             logging.warning("An error occurred while attempting to stop consumption from a queue")
 
     def _close(self):
-        deadline = time.time() + self._TIMEOUT
-
-        logging.info("Releasing service resources...")
+        deadline = time.monotonic() + self._TIMEOUT
         logging.info(f"Waiting up to {self._TIMEOUT} seconds for active threads to finish")
 
-        remaining = max(0.0, deadline - time.time())
+        remaining = max(0.0, deadline - time.monotonic())
         if remaining > 0:
             if self.publisher.stop(timeout=remaining):
                 logging.warning(f"Shutdown timed out with still active threads")
@@ -60,7 +58,7 @@ class Average:
         reported, totals = self.requests.setdefault(req_id, (set(), [0, 0]))
 
         if sum_id in reported:
-            logging.warning(f"Duplicated partial from Sum instance {sum_id} for client with req_id={req_id}")
+            logging.warning(f"Duplicated partial from sum_{sum_id} for req_id={req_id}")
             return
 
         reported.add(sum_id)
@@ -82,7 +80,7 @@ class Average:
             message=[average], # Podes mandarlo como un número, fijate que el que lo reciba lo interprete asi
         )
 
-        logging.info(f"Finish processing for client with req_id={req_id}")
+        logging.debug(f"Sending OPCODE_DATA message to all join queues for req_id={req_id}")
         for name in self.join_queue_names:
             self.publisher.publish_queue(name, message)
 
@@ -94,7 +92,7 @@ class Average:
                 logging.debug(f"Received an OPCODE_DATA message from req_id={req_id}")
                 self._handle_partial(req_id, payload)
             else:
-                logging.warning(f"Unexpected OPCODE={opcode} received for req_id={req_id}")
+                logging.warning(f"Unexpected OPCODE received: {opcode}")
             ack()
         except Exception:
             logging.exception("An error occured while processing a message")
@@ -106,7 +104,7 @@ class Average:
             self.input_queue.start_consuming(self.process_message)
         except Exception:
             if self.is_running:
-                logging.critical(f"An error has occurred in the service")
+                logging.critical("An unexpected error occurred while running the service", exc_info=True)
                 raise
             logging.debug("Interrupted by the SIGTERM signal")
         finally:
@@ -118,7 +116,6 @@ def main():
         format="%(asctime)s [%(levelname)s] %(threadName)s: %(message)s"
     )
     logging.getLogger("pika").propagate = False
-
     try:
         Average().start()
     except Exception:

@@ -4,33 +4,31 @@ import signal
 import base64
 import logging
 import requests
-import threading
 
-from common import middleware, message_protocol, entity, rabbitmq
+from common import middleware, message_protocol, rabbitmq
 
 MOM_HOST = os.environ["MOM_HOST"]
 
 ID = int(os.environ["ID"])
 GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
+IMAGE_DOWNLOADER_QUEUE = os.environ["IMAGE_DOWNLOADER_QUEUE"]
 IMAGE_DOWNLOADER_AMOUNT = int(os.environ["IMAGE_DOWNLOADER_AMOUNT"])
 IMAGE_DOWNLOADER_PREFIX = os.environ["IMAGE_DOWNLOADER_PREFIX"]
-IMAGE_DOWNLOADER_QUEUE = os.environ["IMAGE_DOWNLOADER_QUEUE"]
 
-def define_exchanges(host, prefix, amount, exclude_id = None):
-    exchanges = {}
+def download(url: str, timeout: float):
+    headers = { "User-Agent": "Mozilla/5.0" }
+    response = requests.get(url=url, headers=headers, timeout=timeout)
 
-    for i in range(amount):
-        if i == exclude_id:
-            continue
+    response.raise_for_status()
+    
+    image = base64.b64encode(response.content).decode(message_protocol.ENCODING)
+    image_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip()
 
-        exchanges[i] = middleware.MessageMiddlewareExchangeRabbitMQ(
-            host, prefix, [f"{prefix}_{i}"]
-        )
-
-    return exchanges
+    return image, image_type
 
 class ImageDownloader():
     _TIMEOUT = 5.0
+    _GATEWAY_QUEUE = f"{GATEWAY_PREFIX}_2"
 
     def __init__(self):
         signal.signal(signalnum=signal.SIGTERM, handler=self._sigterm_handler)
@@ -49,7 +47,7 @@ class ImageDownloader():
         )
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
-            queues=[f"{GATEWAY_PREFIX}_2"],
+            queues=[self._GATEWAY_QUEUE],
         )
 
     def _sigterm_handler(self, _signum, _frame):
@@ -76,29 +74,23 @@ class ImageDownloader():
         try:
             self.input_queue.close()
         except Exception:
-            logging.exception("Failed to close the input queue")
+            logging.warning("An error occurred while trying to close the input queue")
 
         if timed_out:
-            logging.error("Shutdown timed out with active components: %s", ", ".join(timed_out))
+            logging.critical("Shutdown timed out with active components: %s", ", ".join(timed_out))
         else:
             logging.info("All resources have been released; goodbye")
 
     def _download_image(self, req_id: int, _: int, messages: list):
+        logging.debug(f"Received an OPCODE_DATA message for req_id={req_id}")
         for message in messages:
             name, url, image = message
             image_bytes = None
-            image_content_type = None
+            image_type = None
 
             if image:
                 try:
-                    headers = {
-                        "User-Agent": "Mozilla/5.0"
-                    }
-                    response = requests.get(url=image, headers=headers, timeout=self._TIMEOUT * 2)
-                    response.raise_for_status()
-                    image_bytes = base64.b64encode(response.content).decode(message_protocol.ENCODING)
-                    image_content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip()
-                    logging.info(f"[{req_id}] - The image has been downloaded")
+                    image_bytes, image_type = download(url=image, timeout=self._TIMEOUT * 2)
                 except requests.HTTPError as e:
                     logging.warning(
                         f"HTTP Error: {e.response.status_code}; reason: {e.response.reason}"
@@ -106,23 +98,24 @@ class ImageDownloader():
                 except requests.RequestException as e:
                     logging.warning(f"Request failed for {image}: {e}")
 
+            logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
             self.publisher.publish_queue(
                 queue=f"{GATEWAY_PREFIX}_2",
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
                     req_id=req_id,
                     batches=1,
-                    message=[[name, url, image, image_content_type, image_bytes]]
+                    message=[[name, url, image, image_type, image_bytes]]
                 )
             )
 
             self.coordinator.record_recv(req_id=req_id)
 
     def _on_recv_all(self, req_id: int, _: list):
-        logging.debug(f"Sending OPCODE_EOF message for req_id={req_id}")
+        logging.debug(f"Sending OPCODE_EOF message to {self._GATEWAY_QUEUE} for req_id={req_id}")
 
         self.publisher.publish_queue(
-            queue=f"{GATEWAY_PREFIX}_2",
+            queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_EOF,
                 req_id=req_id
@@ -137,9 +130,10 @@ class ImageDownloader():
                 self._download_image(*args)
             elif opcode == message_protocol.OPCODE_EOF:
                 req_id, _, expected_messages = args
+                logging.debug(f"Received an OPCODE_EOF message for req_id={req_id}")
                 self.coordinator.on_eof(req_id=req_id, expected_messages=expected_messages)
             else:
-                logging.warning(f"Unexpected OPCODE={opcode} received")
+                logging.warning(f"Unexpected OPCODE received: {opcode}")
             ack()
         except:
             logging.exception("An error occured while processing a message")
@@ -152,7 +146,7 @@ class ImageDownloader():
             self.input_queue.start_consuming(self._process_message)
         except Exception:
             if self.is_running:
-                logging.critical(f"An error has occurred in the service")
+                logging.critical("An unexpected error occurred while running the service", exc_info=True)
                 raise
             logging.debug("Interrupted by the SIGTERM signal")
         finally:

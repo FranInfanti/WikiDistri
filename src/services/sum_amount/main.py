@@ -31,7 +31,6 @@ class SumAmount:
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST, queues=self.average_queue_names
         )
-
         self.coordinator = rabbitmq.RabbitCoordinator(
             id=ID,
             host=MOM_HOST,
@@ -50,27 +49,31 @@ class SumAmount:
             logging.warning("An error occurred while attempting to stop consumption from a queue")
 
     def _close(self):
-        deadline = time.time() + self._TIMEOUT
+        deadline = time.monotonic() + self._TIMEOUT
+        logging.info(f"Waiting up to {self._TIMEOUT} seconds for active threads to stop")
 
-        logging.info("Releasing service resources...")
-        logging.info(f"Waiting up to {self._TIMEOUT} seconds for active threads to finish")
+        timed_out = []
+        try:
+            if self.coordinator.stop(timeout=max(0.0, deadline - time.monotonic())):
+                timed_out.append("coordinator")
+        except Exception:
+            logging.warning("An error occurred while trying to stop the coordinator")
 
-        remaining = max(0.0, deadline - time.time())
-        self.coordinator.stop(timeout=remaining)
-
-        remaining = max(0.0, deadline - time.time())
-        if remaining > 0:
-            if self.publisher.stop(timeout=remaining):
-                logging.warning(f"Shutdown timed out with still active threads")
-        else:
-            logging.warning(f"Shutdown timed out with still active threads")
+        try:
+            if self.publisher.stop(timeout=max(0.0, deadline - time.monotonic())):
+                timed_out.append("publisher")
+        except Exception:
+            logging.warning("An error occurred while trying to stop the publisher")
 
         try:
             self.input_queue.close()
         except Exception:
-            logging.warning("An error occurred while attempting to close a queue")
+            logging.warning("An error occurred while trying to close the input queue")
 
-        logging.info("All resources have been released; goodbye")
+        if timed_out:
+            logging.critical("Shutdown timed out with active components: %s", ", ".join(timed_out))
+        else:
+            logging.info("All resources have been released; goodbye")
 
     def _accumulate(self, req_id: int, entries: list[list[int]]):
         with self.state_lock:
@@ -85,16 +88,20 @@ class SumAmount:
         with self.state_lock:
             words, articles = self.partials.pop(req_id, [0, 0])
 
+        logging.info(f"{words} words from {articles} articles are being submitted to calculate the average for req_id={req_id}")
+
+        average_queue_name = self.average_queue_names[req_id % AVERAGE_COUNT]
+        logging.debug(f"Sending OPCODE_DATA message to {average_queue_name} for req_id={req_id}")
+
         self.publisher.publish_queue(
-            self.average_queue_names[req_id % AVERAGE_COUNT],
-            message_protocol.internal.serialize(
+            queue=average_queue_name,
+            message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_DATA,
                 req_id=req_id,
                 batches=1,
                 message=[ID, words, articles],
             ),
         )
-        logging.debug(f"req_id={req_id}: partial sent ({words} words, {articles} articles)")
 
     def _on_recv_all(self, req_id: int, _: int = 0):
         self._flush(req_id)
@@ -104,13 +111,13 @@ class SumAmount:
             opcode, req_id, _, payload = message_protocol.internal.deserialize(message)
 
             if opcode == message_protocol.OPCODE_DATA:
-                logging.debug(f"Received an OPCODE_DATA message from req_id={req_id}")
+                logging.debug(f"Received an OPCODE_DATA message for req_id={req_id}")
                 self._accumulate(req_id, payload)
             elif opcode == message_protocol.OPCODE_EOF:
-                logging.debug(f"Received an OPCODE_EOF message from req_id={req_id}")
+                logging.debug(f"Received an OPCODE_EOF message for req_id={req_id}")
                 self.coordinator.on_eof(req_id, payload)
             else:
-                logging.warning(f"Unexpected OPCODE={opcode} received for req_id={req_id}")
+                logging.warning(f"Unexpected OPCODE received: {opcode}")
             ack()
         except Exception:
             logging.exception("An error occured while processing a message")
@@ -123,7 +130,7 @@ class SumAmount:
             self.input_queue.start_consuming(self.process_message)
         except Exception:
             if self.is_running:
-                logging.critical(f"An error has occurred in the service")
+                logging.critical("An unexpected error occurred while running the service", exc_info=True)
                 raise
             logging.debug("Interrupted by the SIGTERM signal")
         finally:
@@ -135,7 +142,6 @@ def main():
         format="%(asctime)s [%(levelname)s] %(threadName)s: %(message)s"
     )
     logging.getLogger("pika").propagate = False
-    
     try:
         SumAmount().start()
     except Exception:

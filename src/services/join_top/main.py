@@ -9,10 +9,10 @@ from common import middleware, message_protocol, rabbitmq
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
 
 ID = int(os.environ["ID"])
-JOIN_TOP_QUEUE = os.environ["JOIN_TOP_QUEUE"]
-SUM_WORDS_COUNT = int(os.environ["SUM_WORDS_COUNT"])
-GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
 TOP_SIZE = int(os.environ.get("TOP_SIZE", 20))
+JOIN_TOP_QUEUE = os.environ["JOIN_TOP_QUEUE"]
+GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
+SUM_WORDS_COUNT = int(os.environ["SUM_WORDS_COUNT"])
 
 class JoinTop:
     _TIMEOUT = 5.0
@@ -62,8 +62,8 @@ class JoinTop:
         sum_id, entries = payload
         reported, all_entries = self.requests.setdefault(req_id, (set(), []))
 
-        if sum_id in reported:  # redelivered message
-            logging.warning(f"Duplicated partial top from Sum instance {sum_id} for client with req_id={req_id}")
+        if sum_id in reported:
+            logging.warning(f"Duplicated partial top from sum_{sum_id} for req_id={req_id}")
             return
 
         reported.add(sum_id)
@@ -77,8 +77,7 @@ class JoinTop:
         top = heapq.nsmallest(TOP_SIZE, all_entries, key=lambda e: (-e[1], e[0]))
         words = [word for word, _total in top]
 
-        logging.info(f"The global top calculated for the client with req_id={req_id} has {len(words)} words")
-
+        logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
         self.publisher.publish_queue(
             queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
@@ -89,7 +88,7 @@ class JoinTop:
             ),
         )
 
-        logging.info(f"Finish processing for client with req_id={req_id}")
+        logging.debug(f"Sending OPCODE_EOF message to {self._GATEWAY_QUEUE} for req_id={req_id}")
         self.publisher.publish_queue(
             queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
@@ -106,7 +105,7 @@ class JoinTop:
                 logging.debug(f"Received an OPCODE_DATA message from req_id={req_id}")
                 self._handle_partial_top(req_id, payload)
             else:
-                logging.warning(f"Unexpected OPCODE={opcode} received for req_id={req_id}")
+                logging.warning(f"Unexpected OPCODE received: {opcode}")
             ack()
         except Exception:
             logging.exception("An error occured while processing a message")
@@ -118,7 +117,7 @@ class JoinTop:
             self.input_queue.start_consuming(self.process_message)
         except Exception:
             if self.is_running:
-                logging.critical(f"An error has occurred in the service")
+                logging.critical("An unexpected error occurred while running the service", exc_info=True)
                 raise
             logging.debug("Interrupted by the SIGTERM signal")
         finally:
@@ -130,7 +129,6 @@ def main():
         format="%(asctime)s [%(levelname)s] %(threadName)s: %(message)s"
     )
     logging.getLogger("pika").propagate = False
-
     try:
         JoinTop().start()
     except Exception:
