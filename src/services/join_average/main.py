@@ -161,14 +161,25 @@ class JoinAverage:
         logging.info("Releasing service resources...")
 
         try:
+            self.data_queue.stop_consuming_threadsafe()
+        except Exception:
+            logging.warning("Error stopping the data consumer")
+
+        if self.coordinator.stop(timeout=max(0.1, deadline - time.time())):
+            logging.warning("Coordinator threads did not stop in time")
+
+        # Unblock coordinator callbacks if shutdown began before an average arrived.
+        with self.cond:
+            self.is_running = False
+            self.cond.notify_all()
+
+        try:
             self.average_queue.stop_consuming_threadsafe()
         except Exception:
             logging.warning("Error stopping the average consumer")
         if self.average_consumer:
             self.average_consumer.join(timeout=max(0.1, deadline - time.time()))
 
-        if self.coordinator.stop(timeout=max(0.1, deadline - time.time())):
-            logging.warning("Coordinator threads did not stop in time")
         if self.publisher.stop(timeout=max(0.1, deadline - time.time())):
             logging.warning("Publisher thread did not stop in time")
 

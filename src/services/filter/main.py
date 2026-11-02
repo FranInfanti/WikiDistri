@@ -66,7 +66,7 @@ class Filter:
         try:
             self.input_queue.close()
         except Exception:
-            logging.warning("An error occurred while attempting to close the input queue", exc_info=True)
+            logging.exception("An error occurred while attempting to close the input queue")
 
         if timed_out:
             logging.error("Shutdown timed out with active components: %s", ", ".join(timed_out))

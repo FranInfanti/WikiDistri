@@ -1,4 +1,5 @@
 import os
+import time
 import signal
 import logging
 import heapq
@@ -23,6 +24,8 @@ JOIN_TOP_COUNT = int(os.environ["JOIN_TOP_COUNT"])
 TOP_SIZE = int(os.environ.get("TOP_SIZE", 20))
 
 class SumCount:
+    _TIMEOUT = 5.0
+
     def __init__(self):
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
@@ -167,13 +170,31 @@ class SumCount:
             self._close()
 
     def _close(self):
-        self.coordinator.stop()  
-        self.publisher.stop()
+        deadline = time.monotonic() + self._TIMEOUT
+        logging.info("Waiting up to %s seconds for active threads to stop", self._TIMEOUT)
+
+        timed_out = []
+        try:
+            if self.coordinator.stop(timeout=max(0.0, deadline - time.monotonic())):
+                timed_out.append("coordinator")
+        except Exception:
+            logging.exception("Error stopping the coordinator")
+
+        try:
+            if self.publisher.stop(timeout=max(0.0, deadline - time.monotonic())):
+                timed_out.append("publisher")
+        except Exception:
+            logging.exception("Error stopping the publisher")
 
         try:
             self.input_queue.close()
         except Exception:
-            logging.exception("Error closing queue")
+            logging.exception("Error closing the input queue")
+
+        if timed_out:
+            logging.error("Shutdown timed out with active components: %s", ", ".join(timed_out))
+        else:
+            logging.info("All resources have been released; goodbye")
 
 def main():
     logging.basicConfig(

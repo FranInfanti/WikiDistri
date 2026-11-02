@@ -76,7 +76,7 @@ class ImageDownloader():
         try:
             self.input_queue.close()
         except Exception:
-            logging.warning("Failed to close the input queue", exc_info=True)
+            logging.exception("Failed to close the input queue")
 
         if timed_out:
             logging.error("Shutdown timed out with active components: %s", ", ".join(timed_out))

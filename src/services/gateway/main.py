@@ -1,6 +1,7 @@
 import io
 import os
 import csv
+import json
 import time
 import signal
 import socket
@@ -9,7 +10,6 @@ import logging
 import functools
 import threading
 import itertools
-import json
 
 from common import middleware, message_protocol, rabbitmq
 
@@ -23,7 +23,7 @@ GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
 FILTER_QUEUE = os.environ["FILTER_QUEUE"]
 WORD_READER_QUEUE = os.environ["WORD_READER_QUEUE"]
 
-ENVELOPE_OVERHEAD = 64 # bytes reservados para [opcode, req_id, batches, [ ... ]]
+ENVELOPE_OVERHEAD = 64 # bytes reserved for [opcode, req_id, batches, [ ... ]]
 
 def job_format(job_id: int, messages: list):
     batch = []
@@ -71,7 +71,7 @@ def job_format(job_id: int, messages: list):
     return message_protocol.batching.batch_messages(batch)
 
 class Gateway:
-    _TIMEOUT = 5.0
+    _TIMEOUT = 10.0
     _HANDLE_CLIENT_REQUEST_PREFIX = "Uploader"
     _HANDLE_CLIENT_RESPONSE_PREFIX = "Consumer"
 
@@ -102,35 +102,34 @@ class Gateway:
         self.clients_requests_lock = threading.Lock()
 
     def _sigterm_handler(self, _signum, _frame):
-        logging.info("SIGTERM signal received, setting shutdown flag")
+        logging.info("SIGTERM signal received, proceed to shutdown the service...")
         self.is_running = False
-
         if self.server_socket:
             try:
                 self.server_socket.shutdown(socket.SHUT_RDWR)
             except Exception:
                 pass
 
-    def _wait_for_threads(self):
-        deadline = time.time() + self._TIMEOUT
+    def _close(self):
+        deadline = time.monotonic() + self._TIMEOUT
 
         for input_queue in self.input_queues.values():
-            input_queue.stop_consuming_threadsafe()
+            try:
+                input_queue.stop_consuming_threadsafe()
+            except Exception:
+                logging.exception("An error occurred while attempting to stop consuming from the input queue")
 
         with self.active_threads_lock:
             active_threads = list(self.active_threads.values())
 
         logging.info(f"Waiting up to {self._TIMEOUT} seconds for {len(active_threads)} active threads to stop")
         for thread in active_threads:
-            remaining = max(0.0, deadline - time.time())
-
+            remaining = max(0.0, deadline - time.monotonic())
             if remaining <= 0:
                 break
-
             thread.join(timeout=remaining)
 
         remaining_threads = [thread.name for thread in active_threads if thread.is_alive()]
-
         if remaining_threads:
             logging.warning(f"Shutdown timed out with still {len(remaining_threads)} active threads")
 
@@ -138,10 +137,18 @@ class Gateway:
             for client in self.clients_requests.values():
                 client.close()
 
-        if self.publisher.stop(timeout=max(0.0, deadline - time.time())):
+        if self.publisher.stop(timeout=max(0.0, deadline - time.monotonic())):
             logging.warning(f"Shutdown timed out with still one active thread")
         else:
             logging.info("All active threads stopped")
+
+        for input_queue in self.input_queues.values():
+            try:
+                input_queue.close()
+            except Exception:
+                logging.exception("An error occurred while attempting to close the input queue")
+
+        logging.info("All resources have been released; goodbye")
 
     def _publish_eof(self, req_id: int, articles_sent: int):
         message = message_protocol.internal.serialize(
@@ -347,9 +354,7 @@ class Gateway:
                         return
                     self._handle_client_request(client_socket)
         finally:
-            self._wait_for_threads()
-            for input_queue in self.input_queues.values():
-                input_queue.close()
+            self._close()
 
 def main():
     logging.basicConfig(
