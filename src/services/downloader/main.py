@@ -26,7 +26,7 @@ def download(url: str, timeout: float):
 
     return image, image_type
 
-class ImageDownloader():
+class ImageDownloader:
     _TIMEOUT = 5.0
     _GATEWAY_QUEUE = f"{GATEWAY_PREFIX}_2"
 
