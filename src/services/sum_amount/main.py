@@ -36,7 +36,7 @@ class SumAmount:
             host=MOM_HOST,
             prefix=SUM_AMOUNT_PREFIX,
             instances=SUM_AMOUNT_COUNT,
-            on_all_recv=lambda req_id, _sent=None: None,
+            on_all_recv=None,
             on_commit=self._flush, 
         )
 
