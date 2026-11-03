@@ -53,11 +53,9 @@ def job_format(job_id: int, messages: list):
             )
         elif job_id == 4:
             logging.debug(f"Formatting message for job_id={job_id}: {message}")
-            # [..., [ word_0, ..., word_n ]]
-            word = message
-            batch.append(
-                f"{job_id},{word}"
-            )
+            # [..., [ [word_0, count_0], ..., [word_n, count_n] ]]
+            word, count = message
+            batch.append(f"{job_id},{word},{count}")
         elif job_id == 5:
             logging.debug(f"Formatting message for job_id={job_id}: {message}")
             # [..., [ [url_0, amount_0], ..., [url_n, amount_n] ]]

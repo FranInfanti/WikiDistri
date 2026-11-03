@@ -75,7 +75,6 @@ class JoinTop:
     def _finish_request(self, req_id: int):
         _, all_entries = self.requests.pop(req_id)
         top = heapq.nsmallest(TOP_SIZE, all_entries, key=lambda e: (-e[1], e[0]))
-        words = [word for word, _total in top]
 
         logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
         self.publisher.publish_queue(
@@ -83,8 +82,8 @@ class JoinTop:
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_DATA,
                 req_id=req_id,
-                batches=len(words),
-                message=words,
+                batches=len(top),
+                message=top,
             ),
         )
 
