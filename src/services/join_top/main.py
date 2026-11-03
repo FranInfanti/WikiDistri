@@ -6,13 +6,12 @@ import logging
 
 from common import middleware, message_protocol, rabbitmq
 
-MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
-
 ID = int(os.environ["ID"])
 TOP_SIZE = int(os.environ.get("TOP_SIZE", 20))
-JOIN_TOP_QUEUE = os.environ["JOIN_TOP_QUEUE"]
-GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
-SUM_WORDS_COUNT = int(os.environ["SUM_WORDS_COUNT"])
+MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
+GATEWAY_PREFIX = os.environ.get("GATEWAY_PREFIX", "gateway")
+JOIN_TOP_QUEUE = os.environ.get("JOIN_TOP_QUEUE", "join_top_queue")
+SUM_COUNT_INSTANCES = int(os.environ.get("SUM_COUNT_INSTANCES", 1))
 
 class JoinTop:
     _TIMEOUT = 5.0
@@ -69,7 +68,7 @@ class JoinTop:
         reported.add(sum_id)
         all_entries.extend(entries)
 
-        if len(reported) == SUM_WORDS_COUNT:
+        if len(reported) == SUM_COUNT_INSTANCES:
             self._finish_request(req_id)
 
     def _finish_request(self, req_id: int):

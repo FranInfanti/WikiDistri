@@ -7,13 +7,12 @@ import requests
 
 from common import middleware, message_protocol, rabbitmq
 
-MOM_HOST = os.environ["MOM_HOST"]
-
 ID = int(os.environ["ID"])
-GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
-IMAGE_DOWNLOADER_QUEUE = os.environ["IMAGE_DOWNLOADER_QUEUE"]
-IMAGE_DOWNLOADER_AMOUNT = int(os.environ["IMAGE_DOWNLOADER_AMOUNT"])
-IMAGE_DOWNLOADER_PREFIX = os.environ["IMAGE_DOWNLOADER_PREFIX"]
+MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
+GATEWAY_PREFIX = os.environ.get("GATEWAY_PREFIX", "gateway")
+IMAGE_DOWNLOADER_INSTANCES = int(os.environ.get("IMAGE_DOWNLOADER_INSTANCES", 1))
+IMAGE_DOWNLOADER_PREFIX = os.environ.get("IMAGE_DOWNLOADER_PREFIX", "image_downloader")
+IMAGE_DOWNLOADER_QUEUE = os.environ.get("IMAGE_DOWNLOADER_QUEUE", "image_downloader_queue")
 
 def download(url: str, timeout: float):
     headers = { "User-Agent": "Mozilla/5.0" }
@@ -42,7 +41,7 @@ class ImageDownloader:
             id=ID,
             host=MOM_HOST,
             prefix=IMAGE_DOWNLOADER_PREFIX,
-            instances=IMAGE_DOWNLOADER_AMOUNT,
+            instances=IMAGE_DOWNLOADER_INSTANCES,
             on_all_recv=self._on_recv_all
         )
         self.publisher = rabbitmq.RabbitPublisher(

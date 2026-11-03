@@ -6,14 +6,13 @@ import threading
 
 from common import middleware, message_protocol, rabbitmq
 
-MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
-
 ID = int(os.environ["ID"])
-SUM_AMOUNT_QUEUE = os.environ["SUM_AMOUNT_QUEUE"]
-SUM_AMOUNT_PREFIX = os.environ["SUM_AMOUNT_PREFIX"]
-SUM_AMOUNT_COUNT = int(os.environ["SUM_AMOUNT_COUNT"])
-AVERAGE_QUEUE = os.environ["AVERAGE_QUEUE"]
-AVERAGE_COUNT = int(os.environ["AVERAGE_COUNT"])
+MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
+SUM_AMOUNT_INSTANCES = int(os.environ.get("SUM_AMOUNT_INSTANCES", 1))
+SUM_AMOUNT_PREFIX = os.environ.get("SUM_AMOUNT_PREFIX", "sum_amount")
+SUM_AMOUNT_QUEUE = os.environ.get("SUM_AMOUNT_QUEUE", "sum_amount_queue")
+AVERAGE_INSTANCES = int(os.environ.get("AVERAGE_INSTANCES", 1))
+AVERAGE_QUEUE = os.environ.get("AVERAGE_QUEUE", "average_queue")
 
 class SumAmount:
     _TIMEOUT = 5.0
@@ -24,7 +23,7 @@ class SumAmount:
         self.is_running = True
         self.partials: dict[int, list[int]] = {}
         self.state_lock = threading.Lock()
-        self.average_queue_names = [f"{AVERAGE_QUEUE}_{i}" for i in range(AVERAGE_COUNT)]
+        self.average_queue_names = [f"{AVERAGE_QUEUE}_{i}" for i in range(AVERAGE_INSTANCES)]
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST, queue_name=SUM_AMOUNT_QUEUE
         )
@@ -35,7 +34,7 @@ class SumAmount:
             id=ID,
             host=MOM_HOST,
             prefix=SUM_AMOUNT_PREFIX,
-            instances=SUM_AMOUNT_COUNT,
+            instances=SUM_AMOUNT_INSTANCES,
             on_all_recv=None,
             on_commit=self._flush, 
         )
@@ -90,7 +89,7 @@ class SumAmount:
 
         logging.info(f"{words} words from {articles} articles are being submitted to calculate the average for req_id={req_id}")
 
-        average_queue_name = self.average_queue_names[req_id % AVERAGE_COUNT]
+        average_queue_name = self.average_queue_names[req_id % AVERAGE_INSTANCES]
         logging.debug(f"Sending OPCODE_DATA message to {average_queue_name} for req_id={req_id}")
 
         self.publisher.publish_queue(

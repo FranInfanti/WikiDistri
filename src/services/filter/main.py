@@ -5,14 +5,13 @@ import logging
 
 from common import entity, message_protocol, middleware, rabbitmq
 
-MOM_HOST = os.environ["MOM_HOST"]
-
 ID = int(os.environ["ID"])
-FILTER_QUEUE = os.environ["FILTER_QUEUE"]
-FILTER_AMOUNT = int(os.environ["FILTER_AMOUNT"])
-FILTER_PREFIX = os.environ["FILTER_PREFIX"]
-GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
-IMAGE_DOWNLOADER_QUEUE = os.environ["IMAGE_DOWNLOADER_QUEUE"] 
+MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
+GATEWAY_PREFIX = os.environ.get("GATEWAY_PREFIX", "gateway")
+FILTER_INSTANCES = int(os.environ.get("FILTER_INSTANCES", 1))
+FILTER_PREFIX = os.environ.get("FILTER_PREFIX", "filter")
+FILTER_QUEUE = os.environ.get("FILTER_QUEUE", "filter_queue")
+IMAGE_DOWNLOADER_QUEUE = os.environ.get("IMAGE_DOWNLOADER_QUEUE", "image_downloader_queue") 
 
 class Filter:
     _TIMEOUT = 10.0
@@ -34,7 +33,7 @@ class Filter:
             id=ID,
             host=MOM_HOST,
             prefix=FILTER_PREFIX,
-            instances=FILTER_AMOUNT,
+            instances=FILTER_INSTANCES,
             on_all_recv=self._on_recv_all
         )
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(

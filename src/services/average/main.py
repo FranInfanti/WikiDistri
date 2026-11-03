@@ -5,13 +5,12 @@ import logging
 
 from common import middleware, message_protocol, rabbitmq
 
-MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
-
 ID = int(os.environ["ID"])
-JOIN_COUNT = int(os.environ["JOIN_COUNT"])
-AVERAGE_QUEUE = os.environ["AVERAGE_QUEUE"]
-SUM_AMOUNT_COUNT = int(os.environ["SUM_AMOUNT_COUNT"])
-JOIN_AVERAGE_QUEUE = os.environ["JOIN_AVERAGE_QUEUE"]
+MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
+AVERAGE_QUEUE = os.environ.get("AVERAGE_QUEUE", "average_queue")
+SUM_AMOUNT_INSTANCES = int(os.environ.get("SUM_AMOUNT_INSTANCES", 1))
+JOIN_AVERAGE_INSTANCES = int(os.environ.get("JOIN_AVERAGE_INSTANCES", 1))
+JOIN_AVERAGE_QUEUE = os.environ.get("JOIN_AVERAGE_QUEUE", "join_average_queue")
 
 class Average:
     _TIMEOUT = 5.0
@@ -24,8 +23,8 @@ class Average:
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST, queue_name=f"{AVERAGE_QUEUE}_{ID}"
         )
-        self.join_queue_names = [f"{JOIN_AVERAGE_QUEUE}_{i}" for i in range(JOIN_COUNT)]
-        self.publisher = rabbitmq.RabbitPublisher(host=MOM_HOST, queues=self.join_queue_names)
+        self.join_average_queue_names = [f"{JOIN_AVERAGE_QUEUE}_{i}" for i in range(JOIN_AVERAGE_INSTANCES)]
+        self.publisher = rabbitmq.RabbitPublisher(host=MOM_HOST, queues=self.join_average_queue_names)
 
     def _sigterm_handler(self, _signum, _frame):
         logging.info("SIGTERM signal received, proceed to shutdown the service...")
@@ -65,7 +64,7 @@ class Average:
         totals[0] += words
         totals[1] += articles
 
-        if len(reported) == SUM_AMOUNT_COUNT:
+        if len(reported) == SUM_AMOUNT_INSTANCES:
             self._finish_request(req_id)
 
     def _finish_request(self, req_id: int):
@@ -80,8 +79,8 @@ class Average:
             message=average,
         )
 
-        logging.debug(f"Sending OPCODE_DATA message to all join queues for req_id={req_id}")
-        for name in self.join_queue_names:
+        logging.debug(f"Sending OPCODE_DATA message to all join average queues for req_id={req_id}")
+        for name in self.join_average_queue_names:
             self.publisher.publish_queue(name, data_message)
 
         eof_message = message_protocol.internal.serialize(
@@ -91,8 +90,8 @@ class Average:
             message=0
         )
 
-        logging.debug(f"Sending OPCODE_EOF message to all join queues for req_id={req_id}")
-        for name in self.join_queue_names:
+        logging.debug(f"Sending OPCODE_EOF message to all join average queues for req_id={req_id}")
+        for name in self.join_average_queue_names:
             self.publisher.publish_queue(name, eof_message)
 
     def process_message(self, message, ack, nack):

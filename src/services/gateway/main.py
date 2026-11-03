@@ -15,13 +15,12 @@ from common import middleware, message_protocol, rabbitmq
 
 HOST = os.environ["HOST"]
 PORT = int(os.environ["PORT"])
-
 JOBS = int(os.environ["JOBS"])
-MOM_HOST = os.environ["MOM_HOST"]
 BATCH_SIZE = int(os.environ["BATCH_SIZE"])
-GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
-FILTER_QUEUE = os.environ["FILTER_QUEUE"]
-WORD_READER_QUEUE = os.environ["WORD_READER_QUEUE"]
+MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
+GATEWAY_PREFIX = os.environ.get("GATEWAY_PREFIX", "gateway")
+FILTER_QUEUE = os.environ.get("FILTER_QUEUE", "filter_queue")
+WORD_READER_QUEUE = os.environ.get("WORD_READER_QUEUE", "word_reader_queue")
 
 ENVELOPE_OVERHEAD = 64 # bytes reserved for [opcode, req_id, batches, [ ... ]]
 

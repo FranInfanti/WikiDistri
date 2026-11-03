@@ -28,21 +28,21 @@ def build_compose(
     clients: int,
     debug: bool
 ) -> str:
-    counts = {
+    instances = {
         "filters": filters,
         "image_downloaders": image_downloaders,
         "word_readers": word_readers,
         "sum_counts": sum_counts,
-        "join_tops": join_tops,
-        "sum_amounts": sum_amounts,
-        "averages": averages,
         "join_averages": join_averages,
+        "sum_amounts": sum_amounts,
+        "join_tops": join_tops,
+        "averages": averages,
         "clients": clients,
     }
 
     log_level = "INFO" if not debug else "DEBUG"
 
-    for name, count in counts.items():
+    for name, count in instances.items():
         if count < 1:
             raise ValueError(f"{name} must be greater than zero")
 
@@ -109,8 +109,8 @@ def build_compose(
         }
     }
 
-    for filter_id in range(filters):
-        service_name = f"filter_{filter_id}"
+    for id in range(filters):
+        service_name = f"filter_{id}"
         services[service_name] = {
             "build": {
                 "context": "./src/",
@@ -121,10 +121,10 @@ def build_compose(
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
-                "ID": str(filter_id),
+                "ID": str(id),
                 "MOM_HOST": "rabbitmq",
                 "GATEWAY_PREFIX": "gateway",
-                "FILTER_AMOUNT": str(filters),
+                "FILTER_INSTANCES": str(filters),
                 "FILTER_PREFIX": "filter",
                 "FILTER_QUEUE": "filter_queue",
                 "IMAGE_DOWNLOADER_QUEUE": "image_downloader_queue",
@@ -134,8 +134,8 @@ def build_compose(
             },
         }
 
-    for downloader_id in range(image_downloaders):
-        service_name = f"image_downloader_{downloader_id}"
+    for id in range(image_downloaders):
+        service_name = f"image_downloader_{id}"
         services[service_name] = {
             "build": {
                 "context": "./src/",
@@ -146,10 +146,10 @@ def build_compose(
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
-                "ID": str(downloader_id),
+                "ID": str(id),
                 "MOM_HOST": "rabbitmq",
                 "GATEWAY_PREFIX": "gateway",
-                "IMAGE_DOWNLOADER_AMOUNT": str(image_downloaders),
+                "IMAGE_DOWNLOADER_INSTANCES": str(image_downloaders),
                 "IMAGE_DOWNLOADER_PREFIX": "image_downloader",
                 "IMAGE_DOWNLOADER_QUEUE": "image_downloader_queue",
             },
@@ -158,8 +158,8 @@ def build_compose(
             },
         }
 
-    for reader_id in range(word_readers):
-        service_name = f"word_reader_{reader_id}"
+    for id in range(word_readers):
+        service_name = f"word_reader_{id}"
 
         services[service_name] = {
             "build": {
@@ -171,15 +171,15 @@ def build_compose(
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
-                "ID": str(reader_id),
+                "ID": str(id),
                 "MOM_HOST": "rabbitmq",
-                "WORD_READER_AMOUNT": str(word_readers),
+                "WORD_READER_INSTANCES": str(word_readers),
                 "WORD_READER_PREFIX": "word_reader",
                 "WORD_READER_QUEUE": "word_reader_queue",
-                "SUM_WORDS_COUNT": str(sum_counts),
-                "SUM_WORDS_QUEUE_PREFIX": "sum_words_queue",
+                "SUM_COUNT_INSTANCES": str(sum_counts),
+                "SUM_COUNT_QUEUE": "sum_count_queue",
                 "SUM_AMOUNT_QUEUE": "sum_amount_queue",
-                "JOIN_COUNT": str(join_averages),
+                "JOIN_AVERAGE_INSTANCES": str(join_averages),
                 "JOIN_AVERAGE_QUEUE": "join_average_queue",
             },
             "depends_on": {
@@ -187,8 +187,8 @@ def build_compose(
             },
         }
 
-    for sum_id in range(sum_counts):
-        service_name = f"sum_{sum_id}"
+    for id in range(sum_counts):
+        service_name = f"sum_count_{id}"
 
         services[service_name] = {
             "build": {
@@ -200,24 +200,25 @@ def build_compose(
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
-                "MOM_HOST": "rabbitmq",
-                "SUM_WORDS_QUEUE_PREFIX": "sum_words_queue",
-                "SUM_WORDS_COUNT": str(sum_counts),
-                "SUM_COUNT_PREFIX": "sum_count",
+                "ID": str(id),
                 "COORDINATOR_ID": "0",
-                "GATEWAY_PREFIX": "gateway",
+                "TOP_SIZE": "20",
                 "CHUNK_SIZE": "1000",
-                "JOIN_TOP_QUEUE": "join_top",
-                "JOIN_TOP_COUNT": "1",
-                "ID": str(sum_id),
+                "MOM_HOST": "rabbitmq",
+                "GATEWAY_PREFIX": "gateway",
+                "SUM_COUNT_INSTANCES": str(sum_counts),
+                "SUM_COUNT_PREFIX": "sum_count",
+                "SUM_COUNT_QUEUE": "sum_count_queue",
+                "JOIN_TOP_INSTANCES": "1",
+                "JOIN_TOP_QUEUE": "join_top_queue",
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
             },
         }
 
-    for join_top_id in range(join_tops):
-        service_name = f"join_top_{join_top_id}"
+    for id in range(join_tops):
+        service_name = f"join_top_{id}"
 
         services[service_name] = {
             "build": {
@@ -229,19 +230,20 @@ def build_compose(
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
+                "ID": str(id),
+                "TOP_SIZE": "20",
                 "MOM_HOST": "rabbitmq",
-                "JOIN_TOP_QUEUE": "join_top",
-                "SUM_WORDS_COUNT": str(sum_counts),
                 "GATEWAY_PREFIX": "gateway",
-                "ID": str(join_top_id),
+                "JOIN_TOP_QUEUE": "join_top_queue",
+                "SUM_COUNT_INSTANCES": str(sum_counts),
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
             },
         }
 
-    for sum_amount_id in range(sum_amounts):
-        service_name = f"sum_amount_{sum_amount_id}"
+    for id in range(sum_amounts):
+        service_name = f"sum_amount_{id}"
 
         services[service_name] = {
             "build": {
@@ -253,21 +255,21 @@ def build_compose(
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
+                "ID": str(id),
                 "MOM_HOST": "rabbitmq",
-                "ID": str(sum_amount_id),
-                "SUM_AMOUNT_QUEUE": "sum_amount_queue",
+                "SUM_AMOUNT_INSTANCES": str(sum_amounts),
                 "SUM_AMOUNT_PREFIX": "sum_amount",
-                "SUM_AMOUNT_COUNT": str(sum_amounts),
+                "SUM_AMOUNT_QUEUE": "sum_amount_queue",
+                "AVERAGE_INSTANCES": str(averages),
                 "AVERAGE_QUEUE": "average_queue",
-                "AVERAGE_COUNT": str(averages),
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
             },
         }
     
-    for average_id in range(averages):
-        service_name = f"average_{average_id}"
+    for id in range(averages):
+        service_name = f"average_{id}"
 
         services[service_name] = {
             "build": {
@@ -279,20 +281,20 @@ def build_compose(
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
+                "ID": str(id),
                 "MOM_HOST": "rabbitmq",
-                "ID": str(average_id),
                 "AVERAGE_QUEUE": "average_queue",
-                "SUM_AMOUNT_COUNT": str(sum_amounts),
+                "SUM_AMOUNT_INSTANCES": str(sum_amounts),
+                "JOIN_AVERAGE_INSTANCES": str(join_averages),
                 "JOIN_AVERAGE_QUEUE": "join_average_queue",
-                "JOIN_COUNT": str(join_averages),
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
             },
         }
     
-    for join_average_id in range(join_averages):
-        service_name = f"join_average_{join_average_id}"
+    for id in range(join_averages):
+        service_name = f"join_average_{id}"
 
         services[service_name] = {
             "build": {
@@ -304,22 +306,22 @@ def build_compose(
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
-                "MOM_HOST": "rabbitmq",
-                "ID": str(join_average_id),
-                "JOIN_PREFIX": "join",
-                "JOIN_COUNT": str(join_averages),
+                "ID": str(id),
                 "COORDINATOR_ID": "0",
-                "JOIN_AVERAGE_QUEUE": "join_average_queue",
-                "GATEWAY_PREFIX": "gateway",
                 "CHUNK_SIZE": "1000",
+                "MOM_HOST": "rabbitmq",
+                "GATEWAY_PREFIX": "gateway",
+                "JOIN_AVERAGE_INSTANCES": str(join_averages),
+                "JOIN_AVERAGE_PREFIX": "join_average",
+                "JOIN_AVERAGE_QUEUE": "join_average_queue",
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
             },
         }
 
-    for client_id in range(clients):
-        service_name = f"client_{client_id}"
+    for id in range(clients):
+        service_name = f"client_{id}"
         services[service_name] = {
             "build": {
                 "context": ".",
@@ -329,7 +331,7 @@ def build_compose(
             "stop_grace_period": "30s",
             "environment": {
                 "PYTHONUNBUFFERED": "1",
-                "CLIENT_ID": "client_0",
+                "CLIENT_ID": f"client_{id}",
                 "OUTPUT_DIR": "/app/output",
                 "DOWNLOAD_DIR": "/app/input",
                 "FILES_PER_LANGUAGE": "5",

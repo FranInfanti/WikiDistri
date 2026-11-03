@@ -6,18 +6,17 @@ import logging
 
 from common import middleware, message_protocol, rabbitmq
 
-MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
-
 ID = int(os.environ["ID"])
+COORDINATOR_ID = int(os.environ["COORDINATOR_ID"])
 TOP_SIZE = int(os.environ.get("TOP_SIZE", 20))
-GATEWAY_PREFIX = os.environ["GATEWAY_PREFIX"]
-JOIN_TOP_QUEUE = os.environ["JOIN_TOP_QUEUE"]
-JOIN_TOP_COUNT = int(os.environ["JOIN_TOP_COUNT"])
-SUM_WORDS_COUNT = int(os.environ["SUM_WORDS_COUNT"])
 CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE", 1000))
-SUM_COUNT_PREFIX = os.environ["SUM_COUNT_PREFIX"]
-COORDINATOR_ID = int(os.environ.get("COORDINATOR_ID", 0))
-SUM_WORDS_QUEUE_PREFIX = os.environ["SUM_WORDS_QUEUE_PREFIX"]
+MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
+GATEWAY_PREFIX = os.environ.get("GATEWAY_PREFIX", "gateway")
+SUM_COUNT_INSTANCES = int(os.environ.get("SUM_COUNT_INSTANCES", 1))
+SUM_COUNT_PREFIX = os.environ.get("SUM_COUNT_PREFIX", "sum_count")
+SUM_COUNT_QUEUE = os.environ.get("SUM_COUNT_QUEUE", "sum_count_queue")
+JOIN_TOP_INSTANCES = int(os.environ.get("JOIN_TOP_INSTANCES", 1))
+JOIN_TOP_QUEUE = os.environ.get("JOIN_TOP_QUEUE", "join_top_queue")
 
 class SumCount:
     _TIMEOUT = 5.0
@@ -28,9 +27,9 @@ class SumCount:
 
         self.is_running = True
         self.words: dict[int, dict[str, list[int]]] = {}
-        self.join_top_queue_names = [f"{JOIN_TOP_QUEUE}_{i}" for i in range(JOIN_TOP_COUNT)]
+        self.join_top_queue_names = [f"{JOIN_TOP_QUEUE}_{i}" for i in range(JOIN_TOP_INSTANCES)]
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
-            host=MOM_HOST, queue_name=f"{SUM_WORDS_QUEUE_PREFIX}_{ID}"
+            host=MOM_HOST, queue_name=f"{SUM_COUNT_QUEUE}_{ID}"
         )
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
@@ -40,7 +39,7 @@ class SumCount:
             id=ID,
             host=MOM_HOST,
             prefix=SUM_COUNT_PREFIX,
-            instances=SUM_WORDS_COUNT,
+            instances=SUM_COUNT_INSTANCES,
             on_all_recv=self._on_recv_all,
             on_commit=self._on_commit, 
         )
@@ -139,7 +138,7 @@ class SumCount:
         )
         entries = [[word, -neg_total] for neg_total, word in top]
 
-        top_process_queue_name = self.join_top_queue_names[req_id % JOIN_TOP_COUNT]
+        top_process_queue_name = self.join_top_queue_names[req_id % JOIN_TOP_INSTANCES]
         logging.debug(f"Sending OPCODE_DATA message to {top_process_queue_name} for req_id={req_id}")
         
         self.publisher.publish_queue(
