@@ -119,7 +119,8 @@ class RabbitCoordinator:
         tracker.record_done()
         if tracker.all_done(self.instances - 1):
             self.message_tracker.pop(req_id, None)
-            self.on_all_recv(req_id, tracker.sent_by_key())
+            if self.on_all_recv:
+                self.on_all_recv(req_id, tracker.sent_by_key())
 
     def _flush(self, req_id: int):
         if self.on_commit:
@@ -199,7 +200,8 @@ class RabbitCoordinator:
                 logging.info(f"All messages have been processed for req_id={req_id}")
                 self._flush(req_id)
                 self.message_tracker.pop(req_id, None)
-                self.on_all_recv(req_id, tracker.sent_by_key())
+                if self.on_all_recv:
+                    self.on_all_recv(req_id, tracker.sent_by_key())
                 return
             else:
                 logging.critical(f"Message count mismatch for req_id=%s; Expected %s, received %s",
