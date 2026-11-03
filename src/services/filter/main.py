@@ -102,7 +102,7 @@ class Filter:
                     )
                 )
                 
-            if wikipedia_article < 2020 and (
+            if wikipedia_article <= 2020 and (
                 wikipedia_article.section_contains("biography") or wikipedia_article.section_contains("biographie")
             ):
                 
