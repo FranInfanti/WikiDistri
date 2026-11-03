@@ -59,6 +59,7 @@ def build_compose(
                 "FILES_PER_LANGUAGE": "${FILES_PER_LANGUAGE:-5}",
                 "WIKI_LANGUAGES": "${WIKI_LANGUAGES:-en,fr}",
                 "MAX_ROWS": "${MAX_ROWS:-0}",
+                "DOWNLOAD_DIR": "/app/input",
             },
             "volumes": [
                 "./input:/app/input",
@@ -179,7 +180,7 @@ def build_compose(
                 "SUM_WORDS_QUEUE_PREFIX": "sum_words_queue",
                 "SUM_AMOUNT_QUEUE": "sum_amount_queue",
                 "JOIN_COUNT": str(join_averages),
-                "JOIN_QUEUE": "join_queue",
+                "JOIN_AVERAGE_QUEUE": "join_average_queue",
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
@@ -304,7 +305,6 @@ def build_compose(
                 "LOG_LEVEL": log_level,
                 "MOM_HOST": "rabbitmq",
                 "ID": str(join_average_id),
-                "JOIN_QUEUE": "join_queue",
                 "JOIN_PREFIX": "join",
                 "JOIN_COUNT": str(join_averages),
                 "COORDINATOR_ID": "0",

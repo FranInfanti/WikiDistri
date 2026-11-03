@@ -19,7 +19,7 @@ WORD_READER_AMOUNT = int(os.environ.get("WORD_READER_AMOUNT", 1))
 SUM_WORDS_QUEUE_PREFIX = os.environ["SUM_WORDS_QUEUE_PREFIX"]
 SUM_WORDS_COUNT = int(os.environ.get("SUM_WORDS_COUNT", 1))
 
-JOIN_QUEUE = os.environ["JOIN_QUEUE"]
+JOIN_AVERAGE_QUEUE = os.environ["JOIN_AVERAGE_QUEUE"]
 JOIN_COUNT = int(os.environ["JOIN_COUNT"])
 SUM_AMOUNT_QUEUE = os.environ["SUM_AMOUNT_QUEUE"]
 
@@ -54,7 +54,7 @@ class WordReader:
             f"{SUM_WORDS_QUEUE_PREFIX}_{i}" for i in range(SUM_WORDS_COUNT)
         ]
 
-        self.join_queue_names = [f"{JOIN_QUEUE}_{i}" for i in range(JOIN_COUNT)]
+        self.join_queue_names = [f"{JOIN_AVERAGE_QUEUE}_{i}" for i in range(JOIN_COUNT)]
         
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
@@ -162,9 +162,8 @@ class WordReader:
                     req_id=req_id, batches=len(batch), message=batch,
                 ),
             )
-            logging.debug("req_id=%s -> %s: %s articles", req_id, JOIN_QUEUE, len(join_batches))
-            self.coordinator.record_sent(who=JOIN_QUEUE, req_id=req_id)
-            
+            logging.debug("req_id=%s -> %s: %s articles", req_id, JOIN_AVERAGE_QUEUE, len(join_batches))
+            self.coordinator.record_sent(who=JOIN_AVERAGE_QUEUE, req_id=req_id) 
 
         if amount_batch:
             self.publisher.publish_queue(
@@ -192,7 +191,7 @@ class WordReader:
                     ),
                 )
 
-            elif key == JOIN_QUEUE:
+            elif key == JOIN_AVERAGE_QUEUE:
                 self.publisher.publish_queue(
                     self.join_queue_names[0],
                     message_protocol.internal.serialize(
