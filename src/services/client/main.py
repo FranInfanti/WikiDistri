@@ -27,7 +27,9 @@ OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", str(Path(OUTPUT_FILE).parent)))
 CLIENT_ID = os.environ.get("CLIENT_ID") or f"client_{uuid.uuid4().hex}"
 
 if not re.fullmatch(r"[A-Za-z0-9_-]+", CLIENT_ID):
-    raise ValueError("CLIENT_ID must contain only letters, digits, underscores and hyphens")
+    raise ValueError(
+        f"Invalid CLIENT_ID {CLIENT_ID!r}: use only letters, digits, underscores and hyphens"
+    )
 
 def save_image(
     image_dir: Path,

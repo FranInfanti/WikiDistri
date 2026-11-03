@@ -73,7 +73,7 @@ class Average:
         average = words / articles if articles > 0 else 0.0
         logging.info(f"The average calculated for the client with req_id={req_id} is {words}/{articles} = {average}")
 
-        message = message_protocol.internal.serialize(
+        data_message = message_protocol.internal.serialize(
             opcode=message_protocol.OPCODE_DATA,
             req_id=req_id, 
             batches=1, 
@@ -82,7 +82,18 @@ class Average:
 
         logging.debug(f"Sending OPCODE_DATA message to all join queues for req_id={req_id}")
         for name in self.join_queue_names:
-            self.publisher.publish_queue(name, message)
+            self.publisher.publish_queue(name, data_message)
+
+        eof_message = message_protocol.internal.serialize(
+            opcode=message_protocol.OPCODE_EOF,
+            req_id=req_id,
+            batches=1,
+            message=0
+        )
+
+        logging.debug(f"Sending OPCODE_EOF message to all join queues for req_id={req_id}")
+        for name in self.join_queue_names:
+            self.publisher.publish_queue(name, eof_message)
 
     def process_message(self, message, ack, nack):
         try:

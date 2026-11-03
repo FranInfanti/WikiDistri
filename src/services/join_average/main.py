@@ -44,6 +44,9 @@ class JoinAverage:
             on_commit=self._on_commit,
         )
 
+        self.eof_recv = {}
+
+
     def _sigterm_handler(self, _signum, _frame):
         logging.info("SIGTERM received, shutting down...")
         self.is_running = False
@@ -78,7 +81,19 @@ class JoinAverage:
                 if ID != COORDINATOR_ID:
                     logging.warning(f"EOF received by non-coordinator join {ID}")
                 else:
-                    self.coordinator.on_eof(req_id, payload + JOIN_COUNT)
+                    logging.debug(f"Received OPCODE_EOF message for req_id={req_id}")
+                    eof_recv, expected = self.eof_recv.get(req_id, (0, 0))
+
+                    eof_recv += 1
+                    expected += payload
+
+                    self.eof_recv[req_id] = (eof_recv, expected)
+
+                    logging.info(f"for req_id={req_id}, total EOF received: {eof_recv}; payload: {payload}")
+                    if eof_recv == 2:
+                        logging.info(f"All joins finished for req_id={req_id}, sending final EOF to gateway")
+                        self.coordinator.on_eof(req_id, expected + JOIN_COUNT)
+                        self.eof_recv.pop(req_id, None)
             else:
                 logging.warning(f"Unexpected OPCODE={opcode} for req_id={req_id}")
             ack()
