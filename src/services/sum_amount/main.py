@@ -36,7 +36,7 @@ class SumAmount:
             host=MOM_HOST,
             prefix=SUM_AMOUNT_PREFIX,
             instances=SUM_AMOUNT_COUNT,
-            on_all_recv=self._on_recv_all,
+            on_all_recv=lambda req_id, _sent=None: None,
             on_commit=self._flush, 
         )
 
@@ -102,9 +102,6 @@ class SumAmount:
                 message=[ID, words, articles],
             ),
         )
-
-    def _on_recv_all(self, req_id: int, _: int = 0):
-        self._flush(req_id)
 
     def process_message(self, message, ack, nack):
         try:

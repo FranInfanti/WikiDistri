@@ -77,7 +77,7 @@ class Average:
             opcode=message_protocol.OPCODE_DATA,
             req_id=req_id, 
             batches=1, 
-            message=[average], # Podes mandarlo como un número, fijate que el que lo reciba lo interprete asi
+            message=average,
         )
 
         logging.debug(f"Sending OPCODE_DATA message to all join queues for req_id={req_id}")
