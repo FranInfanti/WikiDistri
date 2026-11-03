@@ -59,6 +59,7 @@ def build_compose(
                 "FILES_PER_LANGUAGE": "${FILES_PER_LANGUAGE:-5}",
                 "WIKI_LANGUAGES": "${WIKI_LANGUAGES:-en,fr}",
                 "MAX_ROWS": "${MAX_ROWS:-0}",
+                "DOWNLOAD_DIR": "/app/input"
             },
             "volumes": [
                 "./input:/app/input",
@@ -264,6 +265,7 @@ def build_compose(
                 "rabbitmq": {"condition": "service_healthy"},
             },
         }
+    
     for average_id in range(averages):
         service_name = f"average_{average_id}"
 
