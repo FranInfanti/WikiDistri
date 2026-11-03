@@ -1,6 +1,6 @@
 from common import message_protocol
 
-def batch_messages(messages: list[str]):
+def batch_messages(messages: list[str | bytes]):
     """
     Returns a byte stream containing the list of messages, 
     separated using the Length-Prefix protocol.
@@ -11,9 +11,9 @@ def batch_messages(messages: list[str]):
     block = []
 
     for message in messages:
-        line = message.encode(encoding=message_protocol.ENCODING)
+        line = message.encode(encoding=message_protocol.ENCODING) if isinstance(message, str) else message
         length = len(line).to_bytes(
-            message_protocol.MAX_PREFIX_LENGTH, byteorder=message_protocol.ENDIANNESS
+            message_protocol.MAX_BATCH_PREFIX_LENGTH, byteorder=message_protocol.ENDIANNESS
         )
 
         block.append(length + line)
@@ -23,7 +23,7 @@ def batch_messages(messages: list[str]):
 def batch_payload_size(messages: list[str]) -> int:
     """Returns the size in bytes of the payload produced by ``batch_messages``."""
     return sum(
-        len(message.encode(encoding=message_protocol.ENCODING)) + message_protocol.MAX_PREFIX_LENGTH
+        len(message.encode(encoding=message_protocol.ENCODING)) + message_protocol.MAX_BATCH_PREFIX_LENGTH
         for message in messages
     )
 
@@ -42,12 +42,12 @@ def unbatch_messages(payload: bytes, batches: int):
 
     for _ in range(batches):
         length = int.from_bytes(
-            payload[pointer : pointer + message_protocol.MAX_PREFIX_LENGTH], 
+            payload[pointer : pointer + message_protocol.MAX_BATCH_PREFIX_LENGTH], 
             byteorder=message_protocol.ENDIANNESS
         )
-        pointer += message_protocol.MAX_PREFIX_LENGTH
+        pointer += message_protocol.MAX_BATCH_PREFIX_LENGTH
 
         message = payload[pointer : pointer + length]
         pointer += length
 
-        yield message.decode(encoding=message_protocol.ENCODING)
+        yield message

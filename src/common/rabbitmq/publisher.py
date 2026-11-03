@@ -114,7 +114,7 @@ class RabbitPublisher:
                     queues[dest_name].send(message)
                 else:
                     dest_exchanges = [exchanges[dest_name]] \
-                        if dest_name else exchanges.values()
+                        if dest_name is not None else exchanges.values()
 
                     for dest_exchange in dest_exchanges:
                         dest_exchange.send(message)
