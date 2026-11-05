@@ -89,6 +89,7 @@ class ImageDownloader:
 
             if image:
                 try:
+                    logging.info(f"Downloading image {image} for req_id={req_id}")
                     image_bytes, image_type = download(url=image, timeout=self._TIMEOUT * 2)
                 except requests.HTTPError as e:
                     logging.warning(

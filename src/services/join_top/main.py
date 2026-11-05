@@ -75,6 +75,8 @@ class JoinTop:
         _, all_entries = self.requests.pop(req_id)
         top = heapq.nsmallest(TOP_SIZE, all_entries, key=lambda e: (-e[1], e[0]))
 
+        logging.info(f"The most frequent words have been calculated for req_id={req_id}: {top}")
+
         logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
         self.publisher.publish_queue(
             queue=self._GATEWAY_QUEUE,

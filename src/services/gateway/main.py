@@ -266,8 +266,12 @@ class Gateway:
                 )
             elif opcode == message_protocol.OPCODE_EOF:
                 finished = client_req.record_job_finished(job_id)
+                logging.info(f"The job_{job_id} has finished for req_id={req_id}")
                 if finished:
-                    logging.info(f"All jobs finished for req_id={req_id}")
+                    logging.info(
+                        f"All jobs finished for req_id={req_id}; "
+                        f"time elapsed={client_req.elapsed_time():.3f} seconds"
+                    )
                     with self.clients_requests_lock:
                         self.clients_requests.pop(req_id, None)
 
