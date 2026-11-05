@@ -3,7 +3,8 @@ import time
 import signal
 import logging
 
-from common import entity, message_protocol, middleware, rabbitmq
+from datetime import datetime
+from common import message_protocol, middleware, rabbitmq
 
 ID = int(os.environ["ID"])
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
@@ -12,6 +13,21 @@ FILTER_INSTANCES = int(os.environ.get("FILTER_INSTANCES", 1))
 FILTER_PREFIX = os.environ.get("FILTER_PREFIX", "filter")
 FILTER_QUEUE = os.environ.get("FILTER_QUEUE", "filter_queue")
 IMAGE_DOWNLOADER_QUEUE = os.environ.get("IMAGE_DOWNLOADER_QUEUE", "image_downloader_queue") 
+
+def section_contains(sections: str | None, *words: str) -> bool:
+    import json
+
+    if not sections:
+        return False
+
+    terms = tuple(word.lower() for word in words)
+    parsed_sections = json.loads(sections)
+
+    return any(
+        term in (section.get("name") or "").lower()
+        for section in parsed_sections
+        for term in terms
+    )
 
 class Filter:
     _TIMEOUT = 10.0
@@ -78,48 +94,37 @@ class Filter:
         
         for message in messages:
             name, url, date_modified, image, in_language, sections = message
-            wikipedia_article = entity.WikipediaArticle(
-                name=name,
-                url=url,
-                date_modified=date_modified,
-                image=image,
-                in_language=in_language,
-                sections=sections
-            )
-
-            if wikipedia_article.is_language("en") and wikipedia_article <= 2020:
+            self.coordinator.record_recv(req_id=req_id)
+            
+            date_modified = datetime.strptime(date_modified, "%Y-%m-%d %H:%M:%S") if date_modified else None
+            if date_modified is None:
+                logging.warning(f"Received a message with an invalid date_modified value for req_id={req_id}: {message}")
+                continue
+        
+            if in_language == "en" and date_modified.year <= 2020:
                 logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
-                
-                filter_message = wikipedia_article.to_list(url=True, date_modified=True)
                 self.publisher_gateway.publish_queue(
                     queue=self._GATEWAY_QUEUE,
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_DATA,
                         req_id=req_id,
                         batches=1,
-                        message=[filter_message]
+                        message=[[url, date_modified.strftime("%Y-%m-%d %H:%M:%S")]]
                     )
                 )
                 
-            if wikipedia_article <= 2020 and (
-                wikipedia_article.section_contains("biography") or wikipedia_article.section_contains("biographie")
-            ):
-                
+            if date_modified.year <= 2020 and section_contains(sections, "biography", "biographie"):
                 logging.debug(f"Sending OPCODE_DATA message to {IMAGE_DOWNLOADER_QUEUE} for req_id={req_id}")
-                
-                image_downloader_message = wikipedia_article.to_list(name=True, url=True, image=True)
                 self.publisher_downloader.publish_queue(
                     queue=IMAGE_DOWNLOADER_QUEUE,
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_DATA,
                         req_id=req_id,
                         batches=1,
-                        message=[image_downloader_message]
+                        message=[[name, url , image]]
                     )
                 )
                 self.coordinator.record_sent(who=IMAGE_DOWNLOADER_QUEUE, req_id=req_id)
-
-            self.coordinator.record_recv(req_id=req_id)
 
     def _on_recv_all(self, req_id: int, sent_messages: list):
         logging.debug(f"Sending OPCODE_EOF message to {self._GATEWAY_QUEUE} for req_id={req_id}")
