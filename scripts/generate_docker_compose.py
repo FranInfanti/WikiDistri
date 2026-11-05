@@ -58,8 +58,7 @@ def build_compose(
             "environment": {
                 "FILES_PER_LANGUAGE": "${FILES_PER_LANGUAGE:-5}",
                 "WIKI_LANGUAGES": "${WIKI_LANGUAGES:-en,fr}",
-                "MAX_ROWS": "${MAX_ROWS:-0}",
-                "DOWNLOAD_DIR": "/app/input",
+                "DOWNLOAD_DIR": "/app/input/data",
             },
             "volumes": [
                 "./input:/app/input",
@@ -332,8 +331,8 @@ def build_compose(
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "CLIENT_ID": f"client_{id}",
+                "INPUT_DIR": "/app/input/data",
                 "OUTPUT_DIR": "/app/output",
-                "DOWNLOAD_DIR": "/app/input",
                 "FILES_PER_LANGUAGE": "5",
                 "WIKI_LANGUAGES": "en,fr",
                 "MAX_ROWS": "0",

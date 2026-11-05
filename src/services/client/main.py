@@ -21,9 +21,8 @@ SERVER_HOST = os.environ["SERVER_HOST"]
 
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", 50))
 MAX_ROWS = int(os.environ.get("MAX_ROWS", 0))
-INPUT_PARQUET = os.environ.get("INPUT_PARQUET")
-OUTPUT_FILE = os.environ.get("OUTPUT_FILE", "output/result.csv")
-OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", str(Path(OUTPUT_FILE).parent)))
+INPUT_PARQUET = os.environ.get("INPUT_PARQUET", None)
+OUTPUT_DIR = Path(os.environ.get("OUTPUT_DIR", "output"))
 CLIENT_ID = os.environ.get("CLIENT_ID") or f"client_{uuid.uuid4().hex}"
 
 if not re.fullmatch(r"[A-Za-z0-9_-]+", CLIENT_ID):

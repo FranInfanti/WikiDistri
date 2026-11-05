@@ -1,17 +1,14 @@
 """Descarga los Parquet de Wikipedia a input y permite exportarlos a CSV."""
 
 import os
-from contextlib import closing
-from pathlib import Path
-
 import kagglehub
-import pyarrow.parquet as pq
+
+from pathlib import Path
+from contextlib import closing
 
 DATASET = "wikimedia-foundation/wikipedia-structured-contents"
 LANGUAGES = ("en", "fr")
 FILES_PER_LANGUAGE = 5
-MAX_ROWS = 0
-BATCH_SIZE = 1000
 
 COLUMNS = (
     "abstract",
@@ -22,9 +19,26 @@ COLUMNS = (
     "sections",
     "url",
 )
-INPUT_ROOT = Path(__file__).resolve().parents[1] / "input"
-OUTPUT_FILE = INPUT_ROOT / "articles.csv"
 
+INPUT_ROOT = Path(__file__).resolve().parents[1] / "input"
+
+def _download_from_kaggle(path = None):
+    requested_file = path or "dataset completo"
+    print(f"Started download from Kaggle: {requested_file}", flush=True)
+    if path is None:
+        downloaded_path = Path(kagglehub.dataset_download(DATASET))
+    else:
+        downloaded_path = Path(kagglehub.dataset_download(DATASET, path=path))
+
+    if downloaded_path.is_file():
+        size = downloaded_path.stat().st_size
+        print(
+            f"Download finished: {downloaded_path} ({size:,} bytes)",
+            flush=True,
+        )
+    else:
+        print(f"Download finished: {downloaded_path}", flush=True)
+    return downloaded_path
 
 def _language_for_path(path, languages):
     for part in path.parts:
@@ -34,15 +48,13 @@ def _language_for_path(path, languages):
                 return language
     return None
 
-
 def _interleaved_files(files_by_language, languages):
     for index in range(max(map(len, files_by_language.values()), default=0)):
         for language in languages:
             if index < len(files_by_language[language]):
                 yield files_by_language[language][index]
 
-
-def parquet_files(input_file=None, stop=None):
+def parquet_files(input_file: str = None, stop = None):
     """Entrega archivos locales o descarga los Parquet necesarios a input."""
 
     if input_file:
@@ -62,37 +74,16 @@ def parquet_files(input_file=None, stop=None):
     if count is not None and count < 1:
         raise ValueError("FILES_PER_LANGUAGE debe ser mayor que cero o all")
 
-    input_dir = os.environ.get("INPUT_DIR")
-
-    if input_dir:
-        files_by_language = {language: [] for language in languages}
-        other_files = []
-
-        for path in sorted(Path(input_dir).rglob("*.parquet")):
-            language = _language_for_path(path, LANGUAGES)
-            if language in files_by_language:
-                files_by_language[language].append(path)
-            elif language is None:
-                other_files.append(path)
-
-        if not any(files_by_language.values()) and not other_files:
-            raise FileNotFoundError(f"No se encontraron Parquet en {input_dir}")
-
-        for language in languages:
-            if count is not None:
-                files_by_language[language] = files_by_language[language][:count]
-        yield from _interleaved_files(files_by_language, languages)
-        yield from (other_files if count is None else other_files[:count])
-        return
-
-    input_root = Path(os.environ.get("DOWNLOAD_DIR", str(INPUT_ROOT)))
+    input_root = Path(
+        os.environ.get("INPUT_DIR")
+        or os.environ.get("DOWNLOAD_DIR", str(INPUT_ROOT))
+    )
     input_root.mkdir(parents=True, exist_ok=True)
-    # Se conserva KaggleHub y su organización de archivos, pero dentro de input.
-    # No se utiliza el volumen separado kaggle-cache ni otro directorio de datos.
+
     os.environ["KAGGLEHUB_CACHE"] = str(input_root)
 
     if count is None:
-        dataset_dir = Path(kagglehub.dataset_download(DATASET))
+        dataset_dir = _download_from_kaggle()
         files_by_language = {}
 
         for language in languages:
@@ -108,73 +99,47 @@ def parquet_files(input_file=None, stop=None):
 
         return
 
-    local_files = {}
-    other_files = []
+    local_files_by_language = {language: {} for language in languages}
     for path in sorted(input_root.rglob("*.parquet")):
-        if _language_for_path(path, LANGUAGES) in languages:
-            local_files[path.name] = path
-        elif _language_for_path(path, LANGUAGES) is None:
-            other_files.append(path)
+        language = _language_for_path(path, languages)
+        if language in local_files_by_language:
+            local_files_by_language[language].setdefault(path.name, path)
 
-    if not local_files and other_files:
-        yield from (other_files if count is None else other_files[:count])
-        return
+    files_by_language = {}
+    existing_names_by_language = {}
+    for language in languages:
+        local_files = local_files_by_language[language]
+        files_by_language[language] = sorted(local_files.values())[:count]
+        existing_names_by_language[language] = set(local_files)
 
+    next_remote_index = {language: 0 for language in languages}
     for index in range(count):
         for language in languages:
             if stop is not None and stop.is_set():
                 return
-            prefix = f"{language}wiki/data/{language}wiki_namespace_0_"
-            file_name = f"{language}wiki_namespace_0_{index:05}.parquet"
-            local_path = local_files.get(file_name)
-            if local_path is not None:
-                yield local_path
-            else:
-                remote_path = f"{prefix}{index:05}.parquet"
-                yield Path(kagglehub.dataset_download(DATASET, path=remote_path))
 
-    yield from (other_files if count is None else other_files[:count])
+            files = files_by_language[language]
+            if index < len(files):
+                yield files[index]
+                continue
 
+            remote_index = next_remote_index[language]
+            file_name = f"{language}wiki_namespace_0_{remote_index:05}.parquet"
+            while file_name in existing_names_by_language[language]:
+                remote_index += 1
+                file_name = f"{language}wiki_namespace_0_{remote_index:05}.parquet"
 
-def download_dataset(max_rows=None, batch_size=None, output_file=None):
-    """Lee los Parquet por lotes y exporta sus columnas originales al CSV de inspección."""
+            remote_path = f"{language}wiki/data/{file_name}"
+            downloaded_file = _download_from_kaggle(remote_path)
+            files.append(downloaded_file)
+            existing_names_by_language[language].add(file_name)
+            next_remote_index[language] = remote_index + 1
+            yield downloaded_file
 
-    if max_rows is None:
-        max_rows = int(os.environ.get("MAX_ROWS", MAX_ROWS))
-
-    if batch_size is None:
-        batch_size = int(os.environ.get("BATCH_SIZE", BATCH_SIZE))
-
-    if max_rows < 0 or batch_size < 1:
-        raise ValueError("MAX_ROWS debe ser >= 0 y BATCH_SIZE debe ser > 0")
-
-    output_file = Path(output_file) if output_file else OUTPUT_FILE
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    written_rows = 0
-
-    with output_file.open("w", encoding="utf-8", newline="") as output:
-        with closing(parquet_files()) as paths:
-            for parquet_path in paths:
-                print(f"Procesando {parquet_path}", flush=True)
-
-                with pq.ParquetFile(parquet_path) as parquet:
-                    for batch in parquet.iter_batches(batch_size=batch_size, columns=COLUMNS):
-                        articles = batch.to_pandas()
-
-                        if max_rows:
-                            articles = articles.head(max_rows - written_rows)
-
-                        articles.to_csv(
-                            output,
-                            header=False,
-                            index=False,
-                            date_format="%Y-%m-%d %H:%M:%S",
-                        )
-                        written_rows += len(articles)
-
-                        if max_rows and written_rows >= max_rows:
-                            return
-
+def download_dataset():
+    with closing(parquet_files()) as paths:
+        for _ in paths:
+           pass
 
 if __name__ == "__main__":
-    download_dataset()
+    SystemExit(download_dataset())
