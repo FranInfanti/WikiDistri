@@ -12,8 +12,7 @@ services:
     environment:
       FILES_PER_LANGUAGE: ${FILES_PER_LANGUAGE:-5}
       WIKI_LANGUAGES: ${WIKI_LANGUAGES:-en,fr}
-      MAX_ROWS: ${MAX_ROWS:-0}
-      DOWNLOAD_DIR: /app/input
+      DOWNLOAD_DIR: /app/input/data
     volumes:
     - ./input:/app/input
   rabbitmq:
@@ -44,7 +43,7 @@ services:
       HOST: gateway
       PORT: '5000'
       JOBS: '5'
-      BATCH_SIZE: '50'
+      BATCH_SIZE: '1000'
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
       FILTER_QUEUE: filter_queue
@@ -363,6 +362,42 @@ services:
     depends_on:
       rabbitmq:
         condition: service_healthy
+  join_top_1:
+    build:
+      context: ./src/
+      dockerfile: services/join_top/Dockerfile
+    container_name: join_top_1
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '1'
+      TOP_SIZE: '20'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      JOIN_TOP_QUEUE: join_top_queue
+      SUM_COUNT_INSTANCES: '4'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  join_top_2:
+    build:
+      context: ./src/
+      dockerfile: services/join_top/Dockerfile
+    container_name: join_top_2
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '2'
+      TOP_SIZE: '20'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      JOIN_TOP_QUEUE: join_top_queue
+      SUM_COUNT_INSTANCES: '4'
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
   sum_amount_0:
     build:
       context: ./src/
@@ -543,15 +578,15 @@ services:
     environment:
       PYTHONUNBUFFERED: '1'
       CLIENT_ID: client_0
+      INPUT_DIR: /app/input/data
       OUTPUT_DIR: /app/output
-      DOWNLOAD_DIR: /app/input
       FILES_PER_LANGUAGE: '5'
       WIKI_LANGUAGES: en,fr
       MAX_ROWS: '0'
       SERVER_HOST: gateway
       SERVER_PORT: '5000'
-      BATCH_SIZE: '100'
-      PARQUET_BATCH_SIZE: '50'
+      BATCH_SIZE: '1000'
+      PARQUET_BATCH_SIZE: '2000'
     volumes:
     - ./input:/app/input
     - ./output:/app/output

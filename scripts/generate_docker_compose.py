@@ -368,7 +368,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--word-readers", type=positive_int, default=4, metavar="N")
     parser.add_argument("--image-downloaders", type=positive_int, default=3, metavar="N")
     parser.add_argument("--sum-counts", type=positive_int, default=4, metavar="N")
-    parser.add_argument("--join-tops", type=positive_int, default=1, metavar="N")
+    parser.add_argument("--join-tops", type=positive_int, default=3, metavar="N")
     parser.add_argument("--sum-amounts", type=positive_int, default=3, metavar="N")
     parser.add_argument("--averages", type=positive_int, default=3, metavar="N")
     parser.add_argument("--join-averages", type=positive_int, default=3, metavar="N")
