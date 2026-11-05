@@ -96,7 +96,7 @@ def build_compose(
                 "HOST": "gateway",
                 "PORT": "5000",
                 "JOBS": "5",
-                "BATCH_SIZE": "50",
+                "BATCH_SIZE": "1000",
                 "MOM_HOST": "rabbitmq",
                 "GATEWAY_PREFIX": "gateway",
                 "FILTER_QUEUE": "filter_queue",
@@ -339,8 +339,8 @@ def build_compose(
                 "MAX_ROWS": "0",
                 "SERVER_HOST": "gateway",
                 "SERVER_PORT": "5000",
-                "BATCH_SIZE": "100",
-                "PARQUET_BATCH_SIZE": "50"
+                "BATCH_SIZE": "1000",
+                "PARQUET_BATCH_SIZE": "2000"
             },
             "volumes": [
                 "./input:/app/input",
