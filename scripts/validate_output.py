@@ -8,13 +8,6 @@ from pathlib import Path
 QUERIES = (1, 2, 3, 4, 5)
 ORDERED_QUERIES = (4,)
 
-def normalize_csv_line(line: bytes) -> bytes:
-    try:
-        row = next(csv.reader([line.decode("utf-8")]))
-        return "\x00".join(row).encode("utf-8")
-    except (ValueError, UnicodeDecodeError):
-        return line
-
 def find_file(folder: Path, query: int) -> Path | None:
     for name in (f"query_{query}.csv",):
         path = folder / name
@@ -44,7 +37,6 @@ def count_lines(path: Path, transform=None) -> tuple[Counter, int]:
 
 
 def sample_lines(path: Path, wanted: set[int], limit: int, transform=None) -> list[str]:
-    """Relee el archivo y devuelve hasta `limit` líneas cuyo hash está en `wanted`."""
     found: list[str] = []
     seen: set[int] = set()
     for line in iter_lines(path):
@@ -58,13 +50,20 @@ def sample_lines(path: Path, wanted: set[int], limit: int, transform=None) -> li
                 break
     return found
 
+def normalize_csv(line: bytes) -> bytes:
+    if b'"' not in line:
+        return line
+    try:
+        return ",".join(next(csv.reader([line.decode("utf-8")]))).encode("utf-8")
+    except (ValueError, StopIteration, UnicodeDecodeError, csv.Error):
+        return line
 
 def loose_image_row(line: bytes) -> bytes:
     try:
         name, url, image = next(csv.reader([line.decode("utf-8")]))
     except (ValueError, StopIteration, UnicodeDecodeError):
         return line
-    return f"{name}\x00{url}\x00{'img' if image else ''}".encode("utf-8")
+    return f"{name}\x00{url}".encode("utf-8")
 
 
 def compare(dist_path: Path, serial_path: Path, show: int, transform=None):
@@ -93,7 +92,7 @@ def compare(dist_path: Path, serial_path: Path, show: int, transform=None):
     return ok, n_dist, n_serial, out
 
 
-def compare_ordered(dist_path: Path, serial_path: Path, show: int):
+def compare_ordered(dist_path: Path, serial_path: Path, show: int, transform=None):
     out: list[str] = []
     n_dist = n_serial = 0
     diffs = 0
@@ -107,13 +106,16 @@ def compare_ordered(dist_path: Path, serial_path: Path, show: int):
                 n_dist += 1
             if ls:
                 n_serial += 1
-            if ld.rstrip(b"\r\n") != ls.rstrip(b"\r\n"):
+            ld, ls = ld.rstrip(b"\r\n"), ls.rstrip(b"\r\n")
+            if transform is not None:
+                ld, ls = transform(ld), transform(ls)
+            if ld != ls:
                 diffs += 1
                 if diffs <= show:
                     out.append(
                         f"      línea {max(n_dist, n_serial)}: "
-                        f"serial={ls.rstrip(b'\r\n').decode('utf-8', errors='replace')!r} "
-                        f"distribuido={ld.rstrip(b'\r\n').decode('utf-8', errors='replace')!r}"
+                        f"serial={ls.decode('utf-8', errors='replace')!r} "
+                        f"distribuido={ld.decode('utf-8', errors='replace')!r}"
                     )
 
     ok = diffs == 0 and n_dist == n_serial
@@ -126,19 +128,14 @@ def compare_ordered(dist_path: Path, serial_path: Path, show: int):
 
 
 def validate(dist_dir, serial_dir, loose_images: bool = False, show: int = 5,
-             ordered=ORDERED_QUERIES, stream=None) -> bool:
+             ordered=ORDERED_QUERIES, normalize: bool = True, stream=None) -> bool:
     stream = stream or sys.stdout
     dist_dir, serial_dir = Path(dist_dir), Path(serial_dir)
     all_ok = True
 
-    print("Directorio distribuido:", dist_dir.resolve())
-    print("Directorio serial:", serial_dir.resolve())
-    print("Archivos distribuidos:", list(dist_dir.glob("*")))
-    print("Archivos seriales:", list(serial_dir.glob("*")))
-
     for query in QUERIES:
-        dist_path = find_file(dist_dir.resolve(), query)
-        serial_path = find_file(serial_dir.resolve(), query)
+        dist_path = find_file(dist_dir, query)
+        serial_path = find_file(serial_dir, query)
 
         if dist_path is None or serial_path is None:
             all_ok = False
@@ -154,18 +151,15 @@ def validate(dist_dir, serial_dir, loose_images: bool = False, show: int = 5,
             continue
 
         if query in ordered:
-            ok, n_dist, n_serial, details = compare_ordered(dist_path, serial_path, show)
-        else:
-            transform = normalize_csv_line
-
-            if query == 2 and loose_images:
-                transform = lambda line: loose_image_row(
-                    normalize_csv_line(line)
-                )
-
-            ok, n_dist, n_serial, details = compare(
-                dist_path, serial_path, show, transform
+            ok, n_dist, n_serial, details = compare_ordered(
+                dist_path, serial_path, show, normalize_csv if normalize else None
             )
+        else:
+            if query == 2 and loose_images:
+                transform = loose_image_row
+            else:
+                transform = normalize_csv if normalize else None
+            ok, n_dist, n_serial, details = compare(dist_path, serial_path, show, transform)
 
         status = "OK   " if ok else "FALLA"
         print(f"query {query}: {status} (distribuido={n_dist} líneas, serial={n_serial} líneas)", file=stream)
@@ -185,10 +179,12 @@ def main(argv=None) -> int:
                         help="query 2: ignora el nombre del archivo de imagen (solo compara si hay o no)")
     parser.add_argument("--ordered", type=int, nargs="*", default=list(ORDERED_QUERIES),
                         help="queries donde el orden importa (default: 4)")
+    parser.add_argument("--strict-csv", action="store_true",
+                        help="no normaliza el quoting CSV (por defecto '\"a,b\",c' == 'a,b,c')")
     parser.add_argument("--show", type=int, default=5, help="líneas de ejemplo por diferencia (default 5)")
     args = parser.parse_args(argv)
 
-    return 0 if validate(args.dist_dir, args.serial_dir, args.loose_images, args.show, tuple(args.ordered)) else 1
+    return 0 if validate(args.dist_dir, args.serial_dir, args.loose_images, args.show, tuple(args.ordered), not args.strict_csv) else 1
 
 
 if __name__ == "__main__":
