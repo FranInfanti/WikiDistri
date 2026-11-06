@@ -66,46 +66,46 @@ def loose_image_row(line: bytes) -> bytes:
     return f"{name}\x00{url}".encode("utf-8")
 
 
-def compare(dist_path: Path, serial_path: Path, show: int, transform=None):
+def compare(first_path: Path, second_path: Path, show: int, transform=None):
     out: list[str] = []
-    dist, n_dist = count_lines(dist_path, transform)
-    serial, n_serial = count_lines(serial_path, transform)
+    first, n_first = count_lines(first_path, transform)
+    second, n_second = count_lines(second_path, transform)
     ok = True
 
-    if n_dist != n_serial:
+    if n_first != n_second:
         ok = False
-        out.append(f"    cantidad de líneas distinta: distribuido={n_dist} serial={n_serial}")
+        out.append(f"    cantidad de líneas distinta: primero={n_first} segundo={n_second}")
 
-    if dist != serial:
+    if first != second:
         ok = False
-        missing = serial - dist
-        extra = dist - serial
+        missing = second - first
+        extra = first - second
         out.append(
-            f"    contenido distinto: faltan {sum(missing.values())} líneas del serial, "
-            f"sobran {sum(extra.values())} del distribuido"
+            f"    contenido distinto: faltan {sum(missing.values())} líneas del segundo, "
+            f"sobran {sum(extra.values())} del primero"
         )
-        for line in sample_lines(serial_path, set(missing), show, transform):
+        for line in sample_lines(second_path, set(missing), show, transform):
             out.append(f"      falta : {line}")
-        for line in sample_lines(dist_path, set(extra), show, transform):
+        for line in sample_lines(first_path, set(extra), show, transform):
             out.append(f"      sobra : {line}")
 
-    return ok, n_dist, n_serial, out
+    return ok, n_first, n_second, out
 
 
-def compare_ordered(dist_path: Path, serial_path: Path, show: int, transform=None):
+def compare_ordered(first_path: Path, second_path: Path, show: int, transform=None):
     out: list[str] = []
-    n_dist = n_serial = 0
+    n_first = n_second = 0
     diffs = 0
 
-    with dist_path.open("rb") as fd, serial_path.open("rb") as fs:
+    with first_path.open("rb") as fd, second_path.open("rb") as fs:
         while True:
             ld, ls = fd.readline(), fs.readline()
             if not ld and not ls:
                 break
             if ld:
-                n_dist += 1
+                n_first += 1
             if ls:
-                n_serial += 1
+                n_second += 1
             ld, ls = ld.rstrip(b"\r\n"), ls.rstrip(b"\r\n")
             if transform is not None:
                 ld, ls = transform(ld), transform(ls)
@@ -113,56 +113,56 @@ def compare_ordered(dist_path: Path, serial_path: Path, show: int, transform=Non
                 diffs += 1
                 if diffs <= show:
                     out.append(
-                        f"      línea {max(n_dist, n_serial)}: "
-                        f"serial={ls.decode('utf-8', errors='replace')!r} "
-                        f"distribuido={ld.decode('utf-8', errors='replace')!r}"
+                        f"      línea {max(n_first, n_second)}: "
+                        f"second={ls.decode('utf-8', errors='replace')!r} "
+                        f"first={ld.decode('utf-8', errors='replace')!r}"
                     )
 
-    ok = diffs == 0 and n_dist == n_serial
+    ok = diffs == 0 and n_first == n_second
     head: list[str] = []
-    if n_dist != n_serial:
-        head.append(f"    cantidad de líneas distinta: distribuido={n_dist} serial={n_serial}")
+    if n_first != n_second:
+        head.append(f"    cantidad de líneas distinta: primero={n_first} segundo={n_second}")
     if diffs:
         head.append(f"    el orden/contenido difiere en {diffs} posiciones (primeras {min(diffs, show)}):")
-    return ok, n_dist, n_serial, head + out
+    return ok, n_first, n_second, head + out
 
 
-def validate(dist_dir, serial_dir, loose_images: bool = False, show: int = 5,
-             ordered=ORDERED_QUERIES, normalize: bool = True, stream=None) -> bool:
+def validate(first_dir, second_dir, loose_images: bool = False, show: int = 5,
+            normalize: bool = True, stream=None) -> bool:
     stream = stream or sys.stdout
-    dist_dir, serial_dir = Path(dist_dir), Path(serial_dir)
+    first_dir, second_dir = Path(first_dir), Path(second_dir)
     all_ok = True
 
     for query in QUERIES:
-        dist_path = find_file(dist_dir, query)
-        serial_path = find_file(serial_dir, query)
+        first_path = find_file(first_dir, query)
+        second_path = find_file(second_dir, query)
 
-        if dist_path is None or serial_path is None:
+        if first_path is None or second_path is None:
             all_ok = False
             where = []
-            if dist_path is None:
-                where.append(f"distribuido ({dist_dir})")
-            if serial_path is None:
-                where.append(f"serial ({serial_dir})")
+            if first_path is None:
+                where.append(f"primero ({first_dir})")
+            if second_path is None:
+                where.append(f"segundo ({second_dir})")
             print(f"query {query}: FALLA - no se encontró el archivo en " + " y ".join(where), file=stream)
-            partial = dist_dir / f"query_{query}.csv.partial"
-            if dist_path is None and partial.exists():
+            partial = first_dir / f"query_{query}.csv.partial"
+            if first_path is None and partial.exists():
                 print(f"    existe {partial.name}: la corrida no terminó bien", file=stream)
             continue
 
-        if query in ordered:
-            ok, n_dist, n_serial, details = compare_ordered(
-                dist_path, serial_path, show, normalize_csv if normalize else None
+        if query in ORDERED_QUERIES:
+            ok, n_first, n_second, details = compare_ordered(
+                first_path, second_path, show, normalize_csv if normalize else None
             )
         else:
             if query == 2 and loose_images:
                 transform = loose_image_row
             else:
                 transform = normalize_csv if normalize else None
-            ok, n_dist, n_serial, details = compare(dist_path, serial_path, show, transform)
+            ok, n_first, n_second, details = compare(first_path, second_path, show, transform)
 
         status = "OK   " if ok else "FALLA"
-        print(f"query {query}: {status} (distribuido={n_dist} líneas, serial={n_serial} líneas)", file=stream)
+        print(f"query {query}: {status} (primero={n_first} líneas, segundo={n_second} líneas)", file=stream)
         for line in details:
             print(line, file=stream)
         all_ok = all_ok and ok
@@ -173,18 +173,16 @@ def validate(dist_dir, serial_dir, loose_images: bool = False, show: int = 5,
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("dist_dir", help="carpeta con los query_N.csv del sistema distribuido")
-    parser.add_argument("serial_dir", help="carpeta con los query_N.csv de la ejecución serial")
+    parser.add_argument("first_dir", help="una carpeta con los query_N.csv")
+    parser.add_argument("second_dir", help="otra carpeta con los query_N.csv")
     parser.add_argument("--loose-images", action="store_true",
-                        help="query 2: ignora el nombre del archivo de imagen (solo compara si hay o no)")
-    parser.add_argument("--ordered", type=int, nargs="*", default=list(ORDERED_QUERIES),
-                        help="queries donde el orden importa (default: 4)")
+                        help="query 2: ignora el nombre del archivo de imagen")
     parser.add_argument("--strict-csv", action="store_true",
                         help="no normaliza el quoting CSV (por defecto '\"a,b\",c' == 'a,b,c')")
     parser.add_argument("--show", type=int, default=5, help="líneas de ejemplo por diferencia (default 5)")
     args = parser.parse_args(argv)
 
-    return 0 if validate(args.dist_dir, args.serial_dir, args.loose_images, args.show, tuple(args.ordered), not args.strict_csv) else 1
+    return 0 if validate(args.first_dir, args.second_dir, args.loose_images, args.show, not args.strict_csv) else 1
 
 
 if __name__ == "__main__":
