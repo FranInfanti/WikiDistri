@@ -21,11 +21,15 @@ JOIN_AVERAGE_QUEUE = os.environ.get("JOIN_AVERAGE_QUEUE", "join_average_queue")
 
 _CUTOFF_YEAR = 2021
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
-_WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
+
+WORD_REGEX = r'\b\w+\b'
+NUMBER_REGEX = r'[+-]?((\d+\.?\d*)|(\.\d+))'
+_WORD_RE = re.compile(WORD_REGEX, re.UNICODE)
+_NUMBER_RE = re.compile(NUMBER_REGEX)
 
 def tokenize(abstract: str, language: str | None) -> list[str]:
-    stopwords = STOPWORDS.get(language or "", set())
-    return [w for w in _WORD_RE.findall(abstract.lower()) if w not in stopwords]
+    words = _WORD_RE.findall(abstract.lower())
+    return [ w for w in words if not _NUMBER_RE.fullmatch(w) and w not in STOPWORDS ]
 
 def language_counts(language: str | None) -> tuple[int, int] | None:
     if language == "en":

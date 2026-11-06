@@ -16,17 +16,17 @@ IMAGE_DOWNLOADER_QUEUE = os.environ.get("IMAGE_DOWNLOADER_QUEUE", "image_downloa
 
 def section_contains(sections: str | None, *words: str) -> bool:
     import json
+    import re
 
     if not sections:
         return False
 
-    terms = tuple(word.lower() for word in words)
     parsed_sections = json.loads(sections)
 
     return any(
-        term in (section.get("name") or "").lower()
+        section.get("name", "").casefold() == word.casefold()
         for section in parsed_sections
-        for term in terms
+        for word in words
     )
 
 class Filter:
