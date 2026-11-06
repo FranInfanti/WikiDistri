@@ -65,6 +65,24 @@ def build_compose(
                 "./input:/app/input",
             ],
         },
+        "notebook": {
+            "build": {
+                "context": ".",
+                "dockerfile": "./src/notebook/Dockerfile",
+            },
+            "profiles": ["notebook"],
+            "container_name": "notebook",
+            "environment": {
+                "PYTHONUNBUFFERED": "1",
+                "PER_LANGUAGE_SAMPLE_AMOUNT": "5",
+                "INPUT_DIR": "/app/input",
+                "OUTPUT_DIR": "/app/output",
+            },
+            "volumes": [
+                "./input:/app/input",
+                "./output:/app/output",
+            ],
+        },
         "rabbitmq": {
             "build": {
                 "context": "./src/services/rabbitmq",
