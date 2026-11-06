@@ -1,12 +1,16 @@
+import re
 import os
+import json
 import time
 import signal
 import logging
+import threading
 
 from datetime import datetime
 from common import message_protocol, middleware, rabbitmq
 
 ID = int(os.environ["ID"])
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "1000"))
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
 GATEWAY_PREFIX = os.environ.get("GATEWAY_PREFIX", "gateway")
 FILTER_INSTANCES = int(os.environ.get("FILTER_INSTANCES", 1))
@@ -14,17 +18,17 @@ FILTER_PREFIX = os.environ.get("FILTER_PREFIX", "filter")
 FILTER_QUEUE = os.environ.get("FILTER_QUEUE", "filter_queue")
 IMAGE_DOWNLOADER_QUEUE = os.environ.get("IMAGE_DOWNLOADER_QUEUE", "image_downloader_queue") 
 
-def section_contains(sections: str | None, *words: str) -> bool:
-    import json
+ENVELOPE_OVERHEAD = 64 # bytes reserved for [opcode, req_id, batches, [ ... ]]
 
+def section_contains(sections: str | None, *words: str) -> bool:
     if not sections:
         return False
 
-    terms = tuple(word.lower() for word in words)
+    terms = tuple(re.compile(rf"\b{re.escape(word)}\b", re.IGNORECASE) for word in words)
     parsed_sections = json.loads(sections)
 
     return any(
-        term in (section.get("name") or "").lower()
+        term.search(section.get("name") or "")
         for section in parsed_sections
         for term in terms
     )
@@ -32,11 +36,17 @@ def section_contains(sections: str | None, *words: str) -> bool:
 class Filter:
     _TIMEOUT = 10.0
     _GATEWAY_QUEUE = f"{GATEWAY_PREFIX}_1"
+    _MAX_GATEWAY_MESSAGE_SIZE = message_protocol.MAX_RABBITMQ_MESSAGE_SIZE
 
     def __init__(self):
+        if BATCH_SIZE <= 0:
+            raise ValueError("BATCH_SIZE must be greater than zero")
+
         signal.signal(signal.SIGTERM, self._sigterm_handler)
         
         self.is_running = True
+        self.batches = {}
+        self.batches_lock = threading.Lock()
         self.publisher_downloader = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
             queues=[IMAGE_DOWNLOADER_QUEUE],
@@ -89,6 +99,62 @@ class Filter:
         else:
             logging.info("All resources have been released; goodbye")
 
+    def _publish_batch(self, req_id: int, dest: str, batch: list):
+        if dest == self._GATEWAY_QUEUE:
+            publisher = self.publisher_gateway
+        elif dest == IMAGE_DOWNLOADER_QUEUE:
+            publisher = self.publisher_downloader
+        else:
+            raise ValueError(f"Unknown batch destination: {dest}")
+
+        logging.debug(
+            "Sending OPCODE_DATA batch of %s messages to %s for req_id=%s",
+            len(batch),
+            dest,
+            req_id,
+        )
+        publisher.publish_queue(
+            queue=dest,
+            message=message_protocol.internal.serialize(
+                opcode=message_protocol.OPCODE_DATA,
+                req_id=req_id,
+                batches=len(batch),
+                message=batch,
+            )
+        )
+
+    def _batch_record(self, req_id: int, dest: str, record: list):
+        with self.batches_lock:
+            # the key is (req_id, dest), eg. (1, gateway_1)
+            batch, batch_size = self.batches.get((req_id, dest), ([], ENVELOPE_OVERHEAD))
+
+        record_size = len(json.dumps(record).encode(encoding=message_protocol.ENCODING)) + 2
+
+        if batch and (len(batch) >= BATCH_SIZE or batch_size + record_size > self._MAX_GATEWAY_MESSAGE_SIZE):
+            self._publish_batch(req_id, dest, batch)
+            batch, batch_size = [], ENVELOPE_OVERHEAD
+
+        if ENVELOPE_OVERHEAD + record_size > self._MAX_GATEWAY_MESSAGE_SIZE:
+            raise ValueError(
+                f"Serialized message for {self._GATEWAY_QUEUE}, req_id={req_id} exceeds "
+                f"RabbitMQ's {self._MAX_GATEWAY_MESSAGE_SIZE}-byte limit"
+            )
+
+        batch.append(record)
+        batch_size += record_size
+
+        with self.batches_lock:
+            self.batches[(req_id, dest)] = (batch, batch_size)
+
+    def _flush_batches(self, req_id: int):
+        with self.batches_lock:
+            keys = [key for key in self.batches if key[0] == req_id]
+            for key in keys:
+                dest = key[1]
+                batch, _ = self.batches[key]
+                self._publish_batch(req_id, dest, batch)
+                del self.batches[key]
+
     def _filter_message(self, req_id: int, _: int, messages: list[list]):
         logging.debug(f"Received an OPCODE_DATA message for req_id={req_id}")
         
@@ -102,32 +168,25 @@ class Filter:
                 continue
         
             if in_language == "en" and date_modified.year <= 2020:
-                logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
-                self.publisher_gateway.publish_queue(
-                    queue=self._GATEWAY_QUEUE,
-                    message=message_protocol.internal.serialize(
-                        opcode=message_protocol.OPCODE_DATA,
-                        req_id=req_id,
-                        batches=1,
-                        message=[[url, date_modified.strftime("%Y-%m-%d %H:%M:%S")]]
-                    )
+                self._batch_record(
+                    req_id=req_id,
+                    dest=self._GATEWAY_QUEUE,
+                    record=[url, date_modified.strftime("%Y-%m-%d %H:%M:%S")],
                 )
                 
             if date_modified.year <= 2020 and section_contains(sections, "biography", "biographie"):
-                logging.debug(f"Sending OPCODE_DATA message to {IMAGE_DOWNLOADER_QUEUE} for req_id={req_id}")
-                self.publisher_downloader.publish_queue(
-                    queue=IMAGE_DOWNLOADER_QUEUE,
-                    message=message_protocol.internal.serialize(
-                        opcode=message_protocol.OPCODE_DATA,
-                        req_id=req_id,
-                        batches=1,
-                        message=[[name, url , image]]
-                    )
+                self._batch_record(
+                    req_id=req_id,
+                    dest=IMAGE_DOWNLOADER_QUEUE,
+                    record=[name, url, image]
                 )
                 self.coordinator.record_sent(who=IMAGE_DOWNLOADER_QUEUE, req_id=req_id)
 
+        self._flush_batches(req_id)
+
     def _on_recv_all(self, req_id: int, sent_messages: list):
         logging.debug(f"Sending OPCODE_EOF message to {self._GATEWAY_QUEUE} for req_id={req_id}")
+
         self.publisher_gateway.publish_queue(
             queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
@@ -144,7 +203,7 @@ class Filter:
         if key != IMAGE_DOWNLOADER_QUEUE:
             raise ValueError(f"Unknown key; expected: {IMAGE_DOWNLOADER_QUEUE}, received: {key}")
 
-        logging.debug(f"Sending OPCODE_EOF message to {IMAGE_DOWNLOADER_QUEUE} for req_id={req_id}")
+        logging.debug(f"Sending OPCODE_EOF message to {IMAGE_DOWNLOADER_QUEUE} for req_id={req_id}; expected messages: {sent}")
         self.publisher_downloader.publish_queue(
             queue=IMAGE_DOWNLOADER_QUEUE,
             message=message_protocol.internal.serialize(

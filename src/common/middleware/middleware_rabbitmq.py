@@ -10,6 +10,8 @@ from .middleware import (
     MessageMiddlewareCloseError,
 )
 
+_PREFETCH_COUNT = 20
+
 class MessageMiddlewareCommonRabbitMQ:
 
     def stop_consuming(self):
@@ -40,6 +42,7 @@ class MessageMiddlewareQueueRabbitMQ(MessageMiddlewareCommonRabbitMQ, MessageMid
 
         # defines a chan that allows to communicate with RabbitMQ broker
         self.chan = self.conn.channel()
+        self.chan.basic_qos(prefetch_count=_PREFETCH_COUNT) # ensures that the consumer only receives one message at a time
 
         # both consumer and produced need the queue to exist
         self.chan.queue_declare(queue=self.queue_name)
@@ -94,6 +97,7 @@ class MessageMiddlewareExchangeRabbitMQ(MessageMiddlewareCommonRabbitMQ, Message
 
         self.conn = pika.BlockingConnection(pika.ConnectionParameters(host))
         self.chan = self.conn.channel()
+        self.chan.basic_qos(prefetch_count=_PREFETCH_COUNT) # ensures that the consumer only receives one message at a time
 
         # both consumer and producer need the exchange to exist 
         self.chan.exchange_declare(exchange=exchange_name, exchange_type='direct')

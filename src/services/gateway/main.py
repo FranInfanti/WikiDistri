@@ -162,7 +162,7 @@ class Gateway:
         batch, batch_size = [], ENVELOPE_OVERHEAD
 
         for record in records:
-            record_size = len(json.dumps(record)) + 2
+            record_size = len(json.dumps(record).encode(message_protocol.ENCODING)) + 2
 
             if batch and (len(batch) >= BATCH_SIZE or batch_size + record_size > max_message_size):
                 self.publisher.publish_queue(
