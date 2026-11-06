@@ -21,16 +21,17 @@ IMAGE_DOWNLOADER_QUEUE = os.environ.get("IMAGE_DOWNLOADER_QUEUE", "image_downloa
 ENVELOPE_OVERHEAD = 64 # bytes reserved for [opcode, req_id, batches, [ ... ]]
 
 def section_contains(sections: str | None, *words: str) -> bool:
+    import json
+
     if not sections:
         return False
 
-    terms = tuple(re.compile(rf"\b{re.escape(word)}\b", re.IGNORECASE) for word in words)
     parsed_sections = json.loads(sections)
 
     return any(
-        term.search(section.get("name") or "")
+        section.get("name", "").casefold() == word.casefold()
         for section in parsed_sections
-        for term in terms
+        for word in words
     )
 
 class Filter:

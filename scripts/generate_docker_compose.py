@@ -64,6 +64,24 @@ def build_compose(
                 "./input:/app/input",
             ],
         },
+        "notebook": {
+            "build": {
+                "context": ".",
+                "dockerfile": "./src/notebook/Dockerfile",
+            },
+            "profiles": ["notebook"],
+            "container_name": "notebook",
+            "environment": {
+                "PYTHONUNBUFFERED": "1",
+                "PER_LANGUAGE_SAMPLE_AMOUNT": "5",
+                "INPUT_DIR": "/app/input",
+                "OUTPUT_DIR": "/app/output",
+            },
+            "volumes": [
+                "./input:/app/input",
+                "./output:/app/output",
+            ],
+        },
         "rabbitmq": {
             "build": {
                 "context": "./src/services/rabbitmq",
@@ -121,6 +139,7 @@ def build_compose(
                 "PYTHONUNBUFFERED": "1",
                 "LOG_LEVEL": log_level,
                 "ID": str(id),
+                "BATCH_SIZE": "1000",
                 "MOM_HOST": "rabbitmq",
                 "GATEWAY_PREFIX": "gateway",
                 "FILTER_INSTANCES": str(filters),
@@ -326,6 +345,7 @@ def build_compose(
                 "context": ".",
                 "dockerfile": "src/services/client/Dockerfile",
             },
+            "profiles": ["client"],
             "container_name": service_name,
             "stop_grace_period": "30s",
             "environment": {
