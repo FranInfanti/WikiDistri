@@ -58,6 +58,7 @@ for parquet_file in wiki_files:
     dataframes.append(df)
 
 wiki_entry_df = pd.concat(dataframes, ignore_index=True)
+wiki_entry_df["abstract"] = wiki_entry_df["abstract"].fillna("")
 
 wiki_entry_df.info()
 
