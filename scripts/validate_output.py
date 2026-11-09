@@ -1,9 +1,11 @@
-import argparse
+import io
+import sys
 import csv
 import hashlib
-import sys
-from collections import Counter
+import argparse
+
 from pathlib import Path
+from collections import Counter
 
 QUERIES = (1, 2, 3, 4, 5)
 ORDERED_QUERIES = (4,)
@@ -55,12 +57,37 @@ def normalize_csv(line: bytes) -> bytes:
     except (ValueError, StopIteration, UnicodeDecodeError, csv.Error):
         return line
 
-def loose_image_row(line: bytes) -> bytes:
+def image_presence_row(line: bytes) -> bytes:
     try:
         name, url, image = next(csv.reader([line.decode("utf-8")]))
-    except (ValueError, StopIteration, UnicodeDecodeError):
+    except (ValueError, StopIteration, UnicodeDecodeError, csv.Error):
         return line
-    return f"{name}\x00{url}".encode("utf-8")
+    normalized = io.StringIO(newline="")
+    csv.writer(normalized, lineterminator="").writerow([name, url, bool(image)])
+    return normalized.getvalue().encode("utf-8")
+
+def validate_image_files(csv_path: Path, image_dir: Path, show: int) -> list[str]:
+    errors: list[str] = []
+    image_root = image_dir.resolve()
+
+    with csv_path.open(encoding="utf-8", newline="") as file:
+        for line_number, row in enumerate(csv.reader(file), start=1):
+            if len(row) != 3 or not row[2]:
+                continue
+
+            image_path = Path(row[2])
+            resolved_path = (image_dir / image_path).resolve()
+            if image_path.is_absolute() or not resolved_path.is_relative_to(image_root):
+                errors.append(f"    line {line_number}: image path is outside the output directory: {row[2]}")
+            elif not resolved_path.is_file():
+                errors.append(f"    line {line_number}: image file does not exist: {row[2]}")
+            elif resolved_path.stat().st_size == 0:
+                errors.append(f"    line {line_number}: image file is empty: {row[2]}")
+
+            if len(errors) >= show:
+                break
+
+    return errors
 
 def compare(first_path: Path, second_path: Path, show: int, transform=None):
     out: list[str] = []
@@ -70,20 +97,20 @@ def compare(first_path: Path, second_path: Path, show: int, transform=None):
 
     if n_first != n_second:
         ok = False
-        out.append(f"    cantidad de líneas distinta: primero={n_first} segundo={n_second}")
+        out.append(f"    line count differs: first={n_first}, second={n_second}")
 
     if first != second:
         ok = False
         missing = second - first
         extra = first - second
         out.append(
-            f"    contenido distinto: faltan {sum(missing.values())} líneas del segundo, "
-            f"sobran {sum(extra.values())} del primero"
+            f"    content differs: {sum(missing.values())} lines missing from second, "
+            f"{sum(extra.values())} extra in first"
         )
         for line in sample_lines(second_path, set(missing), show, transform):
-            out.append(f"      falta : {line}")
+            out.append(f"      missing: {line}")
         for line in sample_lines(first_path, set(extra), show, transform):
-            out.append(f"      sobra : {line}")
+            out.append(f"      extra: {line}")
 
     return ok, n_first, n_second, out
 
@@ -108,7 +135,7 @@ def compare_ordered(first_path: Path, second_path: Path, show: int, transform=No
                 diffs += 1
                 if diffs <= show:
                     out.append(
-                        f"      línea {max(n_first, n_second)}: "
+                        f"      line {max(n_first, n_second)}: "
                         f"second={ls.decode('utf-8', errors='replace')!r} "
                         f"first={ld.decode('utf-8', errors='replace')!r}"
                     )
@@ -116,12 +143,12 @@ def compare_ordered(first_path: Path, second_path: Path, show: int, transform=No
     ok = diffs == 0 and n_first == n_second
     head: list[str] = []
     if n_first != n_second:
-        head.append(f"    cantidad de líneas distinta: primero={n_first} segundo={n_second}")
+        head.append(f"    line count differs: first={n_first}, second={n_second}")
     if diffs:
-        head.append(f"    el orden/contenido difiere en {diffs} posiciones (primeras {min(diffs, show)}):")
+        head.append(f"    order/content differs at {diffs} positions (first {min(diffs, show)}):")
     return ok, n_first, n_second, head + out
 
-def validate(first_dir, second_dir, loose_images: bool = False, show: int = 5,
+def validate(first_dir, second_dir, show: int = 5,
             normalize: bool = True, stream=None) -> bool:
     stream = stream or sys.stdout
     first_dir, second_dir = Path(first_dir), Path(second_dir)
@@ -135,13 +162,13 @@ def validate(first_dir, second_dir, loose_images: bool = False, show: int = 5,
             all_ok = False
             where = []
             if first_path is None:
-                where.append(f"primero ({first_dir})")
+                where.append(f"first ({first_dir})")
             if second_path is None:
-                where.append(f"segundo ({second_dir})")
-            print(f"query {query}: FALLA - no se encontró el archivo en " + " y ".join(where), file=stream)
+                where.append(f"second ({second_dir})")
+            print(f"query {query}: FAIL - file not found in " + " and ".join(where), file=stream)
             partial = first_dir / f"query_{query}.csv.partial"
             if first_path is None and partial.exists():
-                print(f"    existe {partial.name}: la corrida no terminó bien", file=stream)
+                print(f"    {partial.name} exists: the run did not finish successfully", file=stream)
             continue
 
         if query in ORDERED_QUERIES:
@@ -149,33 +176,34 @@ def validate(first_dir, second_dir, loose_images: bool = False, show: int = 5,
                 first_path, second_path, show, normalize_csv if normalize else None
             )
         else:
-            if query == 2 and loose_images:
-                transform = loose_image_row
-            else:
-                transform = normalize_csv if normalize else None
+            transform = image_presence_row if query == 2 else normalize_csv if normalize else None
             ok, n_first, n_second, details = compare(first_path, second_path, show, transform)
 
-        status = "OK   " if ok else "FALLA"
-        print(f"query {query}: {status} (primero={n_first} líneas, segundo={n_second} líneas)", file=stream)
+        if query == 2:
+            image_errors = validate_image_files(first_path, first_dir, show)
+            if image_errors:
+                ok = False
+                details.extend(image_errors)
+
+        status = "OK   " if ok else "FAIL "
+        print(f"query {query}: {status} (first={n_first} lines, second={n_second} lines)", file=stream)
         for line in details:
             print(line, file=stream)
         all_ok = all_ok and ok
 
-    print("RESULTADO:", "todas las queries coinciden" if all_ok else "hay diferencias", file=stream)
+    print("RESULT:", "OK; all queries match" if all_ok else "FAIL;differences found", file=stream)
     return all_ok
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("first_dir", help="una carpeta con los query_N.csv")
-    parser.add_argument("second_dir", help="otra carpeta con los query_N.csv")
-    parser.add_argument("--loose-images", action="store_true",
-                        help="query 2: ignora el nombre del archivo de imagen")
+    parser.add_argument("first_dir", help="directory containing the query_N.csv files to validate")
+    parser.add_argument("second_dir", help="directory containing the expected query_N.csv files")
     parser.add_argument("--strict-csv", action="store_true",
-                        help="no normaliza el quoting CSV (por defecto '\"a,b\",c' == 'a,b,c')")
-    parser.add_argument("--show", type=int, default=5, help="líneas de ejemplo por diferencia (default 5)")
+                        help="do not normalize CSV quoting (by default '\"a,b\",c' == 'a,b,c')")
+    parser.add_argument("--show", type=int, default=5, help="examples per difference (default: 5)")
     args = parser.parse_args(argv)
 
-    return 0 if validate(args.first_dir, args.second_dir, args.loose_images, args.show, not args.strict_csv) else 1
+    return 0 if validate(args.first_dir, args.second_dir, args.show, not args.strict_csv) else 1
 
 if __name__ == "__main__":
     SystemExit(main())
