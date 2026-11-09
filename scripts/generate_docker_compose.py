@@ -74,7 +74,7 @@ def build_compose(
             "environment": {
                 "PYTHONUNBUFFERED": "1",
                 "PER_LANGUAGE_SAMPLE_AMOUNT": "1",
-                "INPUT_DIR": "/app/input",
+                "INPUT_DIR": "/app/input/data",
                 "OUTPUT_DIR": "/app/output",
             },
             "volumes": [
