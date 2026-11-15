@@ -5,6 +5,9 @@ import base64
 import logging
 import requests
 
+from datetime import datetime, timezone
+from urllib.parse import unquote, urlsplit
+from email.utils import parsedate_to_datetime
 from common import middleware, message_protocol, rabbitmq
 
 ID = int(os.environ["ID"])
@@ -14,16 +17,74 @@ IMAGE_DOWNLOADER_INSTANCES = int(os.environ.get("IMAGE_DOWNLOADER_INSTANCES", 1)
 IMAGE_DOWNLOADER_PREFIX = os.environ.get("IMAGE_DOWNLOADER_PREFIX", "image_downloader")
 IMAGE_DOWNLOADER_QUEUE = os.environ.get("IMAGE_DOWNLOADER_QUEUE", "image_downloader_queue")
 
-def download(url: str, timeout: float):
-    headers = { "User-Agent": "Mozilla/5.0" }
-    response = requests.get(url=url, headers=headers, timeout=timeout)
+HTTP_RETRIES = 3
+THUMBNAIL_WIDTH = 1024
+WIKIMEDIA_API_URL = "https://commons.wikimedia.org/w/api.php"
 
-    response.raise_for_status()
-    
+def _retry_after(response, fallback: float) -> float:
+    value = response.headers.get("Retry-After")
+    if not value:
+        return fallback
+
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return fallback
+
+def _get(session: requests.Session, url: str, timeout: float, params: dict | None = None):
+    headers = {"User-Agent": "WikiDistri/1.0 (francisco.infanti@gmail.com)"}
+    for attempt in range(HTTP_RETRIES + 1):
+        response = session.get(url=url, headers=headers, params=params, timeout=timeout)
+        if response.status_code != 429 or attempt == HTTP_RETRIES:
+            response.raise_for_status()
+            return response
+
+        delay = _retry_after(response, fallback=2 ** attempt)
+        response.close()
+        logging.warning("Wikimedia returned HTTP 429; retrying in %.1f seconds", delay)
+        time.sleep(delay)
+
+def _thumbnail_url(session: requests.Session, url: str, timeout: float) -> str:
+    filename = unquote(urlsplit(url).path.rsplit("/", 1)[-1])
+    if not filename:
+        raise ValueError(f"Image URL has no filename: {url}")
+
+    response = _get(
+        session=session,
+        url=WIKIMEDIA_API_URL,
+        timeout=timeout,
+        params={
+            "action": "query",
+            "format": "json",
+            "formatversion": 2,
+            "prop": "imageinfo",
+            "iiprop": "url",
+            "iiurlwidth": THUMBNAIL_WIDTH,
+            "titles": f"File:{filename}",
+        },
+    )
+    pages = response.json().get("query", {}).get("pages", [])
+    for page in pages:
+        imageinfo = page.get("imageinfo", [])
+        if imageinfo and imageinfo[0].get("thumburl"):
+            return imageinfo[0]["thumburl"]
+
+    raise ValueError(f"Wikimedia did not return a thumbnail URL for {filename}")
+
+def _download(session: requests.Session, url: str, timeout: float):
+    thumbnail_url = _thumbnail_url(session=session, url=url, timeout=timeout)
+    response = _get(session=session, url=thumbnail_url, timeout=timeout)
+
     image = base64.b64encode(response.content).decode(message_protocol.ENCODING)
     image_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip()
 
-    return image, image_type
+    return thumbnail_url, image, image_type
 
 class ImageDownloader:
     _TIMEOUT = 5.0
@@ -33,6 +94,7 @@ class ImageDownloader:
         signal.signal(signalnum=signal.SIGTERM, handler=self._sigterm_handler)
         
         self.is_running = True
+        self.session = requests.Session()
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST,
             queue_name=IMAGE_DOWNLOADER_QUEUE
@@ -84,19 +146,26 @@ class ImageDownloader:
         logging.debug(f"Received an OPCODE_DATA message for req_id={req_id}")
         for message in messages:
             name, url, image = message
+            image_url = url
             image_bytes = None
             image_type = None
 
             if image:
                 try:
                     logging.info(f"Downloading image {image} for req_id={req_id}")
-                    image_bytes, image_type = download(url=image, timeout=self._TIMEOUT * 2)
+                    image_url, image_bytes, image_type = _download(
+                        session=self.session,
+                        url=image,
+                        timeout=self._TIMEOUT * 2
+                    )
                 except requests.HTTPError as e:
                     logging.warning(
                         f"HTTP Error: {e.response.status_code}; reason: {e.response.reason}"
                     )
                 except requests.RequestException as e:
                     logging.warning(f"Request failed for {image}: {e}")
+                except ValueError as e:
+                    logging.warning(f"Could not resolve thumbnail for {image}: {e}")
 
             logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
             self.publisher.publish_queue(
@@ -105,7 +174,7 @@ class ImageDownloader:
                     opcode=message_protocol.OPCODE_DATA,
                     req_id=req_id,
                     batches=1,
-                    message=[[name, url, image, image_type, image_bytes]]
+                    message=[[name, url, image_url, image_type, image_bytes]]
                 )
             )
 

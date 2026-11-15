@@ -1,0 +1,56 @@
+name: Validate output
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Start processing services
+        run: docker compose up -d --wait
+
+      - name: Run client
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose up -d client_0
+          docker compose wait client_0
+
+          client_container="$(docker compose ps -aq client_0)"
+          if [[ -z "$client_container" ]]; then
+            echo "::error::Could not find the client_0 container"
+            exit 1
+          fi
+
+          client_exit_code="$(docker inspect --format '{{.State.ExitCode}}' "$client_container")"
+          if [[ "$client_exit_code" != "0" ]]; then
+            docker compose logs client_0
+            echo "::error::client_0 exited with code $client_exit_code"
+            exit "$client_exit_code"
+          fi
+
+      - name: Generate expected output
+        run: docker compose --profile notebook run --build --rm notebook
+
+      - name: Validate output
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_dir="$(find output/client_0 -mindepth 1 -maxdepth 1 -type d -name 'run_*' -print | sort | tail -n 1)"
+          if [[ -z "$run_dir" ]]; then
+            echo "::error::No client_0 run directory was generated"
+            exit 1
+          fi
+
+          python scripts/validate_output.py "$run_dir" output/expected_5

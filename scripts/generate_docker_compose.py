@@ -56,7 +56,7 @@ def build_compose(
             "container_name": "dataset-downloader",
             "entrypoint": ["python", "scripts/download_dataset.py"],
             "environment": {
-                "FILES_PER_LANGUAGE": "${FILES_PER_LANGUAGE:-5}",
+                "FILES_PER_LANGUAGE": "${FILES_PER_LANGUAGE:-1}",
                 "WIKI_LANGUAGES": "${WIKI_LANGUAGES:-en,fr}",
                 "DOWNLOAD_DIR": "/app/input/data",
             },
@@ -73,8 +73,8 @@ def build_compose(
             "container_name": "notebook",
             "environment": {
                 "PYTHONUNBUFFERED": "1",
-                "PER_LANGUAGE_SAMPLE_AMOUNT": "5",
-                "INPUT_DIR": "/app/input",
+                "PER_LANGUAGE_SAMPLE_AMOUNT": "1",
+                "INPUT_DIR": "/app/input/data",
                 "OUTPUT_DIR": "/app/output",
             },
             "volumes": [
@@ -353,7 +353,7 @@ def build_compose(
                 "CLIENT_ID": f"client_{id}",
                 "INPUT_DIR": "/app/input/data",
                 "OUTPUT_DIR": "/app/output",
-                "FILES_PER_LANGUAGE": "5",
+                "FILES_PER_LANGUAGE": "1",
                 "WIKI_LANGUAGES": "en,fr",
                 "MAX_ROWS": "0",
                 "SERVER_HOST": "gateway",
