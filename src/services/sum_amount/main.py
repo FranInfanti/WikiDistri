@@ -1,3 +1,4 @@
+import itertools
 import os
 import time
 import signal
@@ -21,6 +22,7 @@ class SumAmount:
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
         self.is_running = True
+        self.message_counter = itertools.count(1)
         self.partials: dict[int, list[int]] = {}
         self.state_lock = threading.Lock()
         self.average_queue_names = [f"{AVERAGE_QUEUE}_{i}" for i in range(AVERAGE_INSTANCES)]
@@ -92,10 +94,12 @@ class SumAmount:
         average_queue_name = self.average_queue_names[req_id % AVERAGE_INSTANCES]
         logging.debug(f"Sending OPCODE_DATA message to {average_queue_name} for req_id={req_id}")
 
+        message_id = next(self.message_counter)
         self.publisher.publish_queue(
             queue=average_queue_name,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_DATA,
+                message_id=message_id,
                 req_id=req_id,
                 batches=1,
                 message=[ID, words, articles],

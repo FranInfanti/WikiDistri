@@ -1,3 +1,4 @@
+import itertools
 import os
 import time
 import signal
@@ -29,6 +30,7 @@ class JoinAverage:
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
         self.is_running = True
+        self.message_counter = itertools.count(1)
         self.eof_recv = {}
         self.state_lock = threading.Lock()
         self.requests: dict[int, _RequestState] = {}
@@ -91,10 +93,11 @@ class JoinAverage:
 
     def _on_recv_all(self, req_id: int, _sent_by_key=None):
         logging.debug(f"Sending OPCODE_EOF message to {self._GATEWAY_QUEUE} for req_id={req_id}")
+        message_id = next(self.message_counter)
         self.publisher.publish_queue(
             queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
-                opcode=message_protocol.OPCODE_EOF, req_id=req_id,
+                opcode=message_protocol.OPCODE_EOF, message_id=message_id, req_id=req_id,
             ),
         )
 
@@ -104,11 +107,12 @@ class JoinAverage:
             chunk = result[i:i + CHUNK_SIZE]
 
             logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
+            message_id = next(self.message_counter)
             self.publisher.publish_queue(
                 queue=self._GATEWAY_QUEUE,
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
-                    req_id=req_id, batches=len(chunk), message=chunk,
+                    message_id=message_id, req_id=req_id, batches=len(chunk), message=chunk,
                 ),
             )
 
@@ -131,7 +135,7 @@ class JoinAverage:
 
     def process_message(self, message, ack, nack):
         try:
-            opcode, req_id, _, payload = message_protocol.internal.deserialize(message)
+            opcode, _, req_id, _, payload = message_protocol.internal.deserialize(message)
 
             if opcode == message_protocol.OPCODE_DATA:
                 logging.debug(f"Received OPCODE_DATA message for req_id={req_id}")

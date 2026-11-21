@@ -1,3 +1,4 @@
+import itertools
 import os
 import time
 import heapq
@@ -21,6 +22,7 @@ class JoinTop:
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
         self.is_running = True
+        self.message_counter = itertools.count(1)
         self.requests: dict[int, tuple[set[int], list]] = {}
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST, queue_name=f"{JOIN_TOP_QUEUE}_{ID}"
@@ -78,10 +80,13 @@ class JoinTop:
         logging.info(f"The most frequent words have been calculated for req_id={req_id}: {top}")
 
         logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
+
+        message_id = next(self.message_counter)
         self.publisher.publish_queue(
             queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_DATA,
+                message_id=message_id,
                 req_id=req_id,
                 batches=len(top),
                 message=top,
@@ -89,17 +94,19 @@ class JoinTop:
         )
 
         logging.debug(f"Sending OPCODE_EOF message to {self._GATEWAY_QUEUE} for req_id={req_id}")
+        message_id = next(self.message_counter)
         self.publisher.publish_queue(
             queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_EOF,
+                message_id=message_id,
                 req_id=req_id,
             ),
         )
 
     def process_message(self, message, ack, nack):
         try:
-            opcode, req_id, _, payload = message_protocol.internal.deserialize(message)
+            opcode, _, req_id, _, payload = message_protocol.internal.deserialize(message)
 
             if opcode == message_protocol.OPCODE_DATA:
                 logging.debug(f"Received an OPCODE_DATA message from req_id={req_id}")
