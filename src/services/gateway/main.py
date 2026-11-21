@@ -99,7 +99,10 @@ class Gateway:
         self.server_host = host
         self.server_port = port
         self.req_counter = itertools.count(1)
-        self.message_counter = itertools.count(1)
+        self.message_counters = {
+            FILTER_QUEUE: itertools.count(0),
+            WORD_READER_QUEUE: itertools.count(0),
+        }
         self.active_threads = {}
         self.active_threads_lock = threading.Lock()
         self.clients_requests = {}
@@ -156,7 +159,7 @@ class Gateway:
 
     def _publish_eof(self, req_id: int, articles_sent: int):
         for queue in (FILTER_QUEUE, WORD_READER_QUEUE):
-            message_id = next(self.message_counter)
+            message_id = next(self.message_counters[queue])
             self.publisher.publish_queue(
                 queue=f"{queue}_0",
                 message=message_protocol.internal.serialize(
@@ -175,7 +178,7 @@ class Gateway:
             record_size = len(json.dumps(record).encode(message_protocol.ENCODING)) + 2
 
             if batch and (len(batch) >= BATCH_SIZE or batch_size + record_size > max_message_size):
-                message_id = next(self.message_counter)
+                message_id = next(self.message_counters[queue])
                 self.publisher.publish_queue(
                     queue=f"{queue}_{message_id % SHARDS[queue]}",
                     message=message_protocol.internal.serialize(
@@ -199,7 +202,7 @@ class Gateway:
 
 
         if batch:
-            message_id = next(self.message_counter)
+            message_id = next(self.message_counters[queue])
             self.publisher.publish_queue(
                 queue=f"{queue}_{message_id % SHARDS[queue]}",
                 message=message_protocol.internal.serialize(
