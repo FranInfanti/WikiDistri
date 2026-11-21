@@ -127,7 +127,7 @@ class RabbitCoordinator:
             self.on_commit(req_id)
 
     def _process_message(self, message, ack, nack):
-        opcode, _, *args = message_protocol.internal.deserialize(message)
+        opcode, *args = message_protocol.internal.deserialize(message)
         try:         
             if opcode == message_protocol.OPCODE_PREPARE:
                 self._process_prepare(*args)

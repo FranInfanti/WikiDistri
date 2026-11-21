@@ -1,4 +1,3 @@
-import itertools
 import os
 import time
 import heapq
@@ -27,7 +26,6 @@ class SumCount:
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
         self.is_running = True
-        self.message_counter = itertools.count(1)
         self.words: dict[int, dict[str, list[int]]] = {}
         self.join_top_queue_names = [f"{JOIN_TOP_QUEUE}_{i}" for i in range(JOIN_TOP_INSTANCES)]
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
@@ -84,12 +82,10 @@ class SumCount:
     def _on_recv_all(self, req_id: int, _: list):
         logging.debug(f"Sending OPCODE_EOF message to {self._GATEWAY_QUEUE} for req_id={req_id}")
 
-        message_id = next(self.message_counter)
         self.publisher.publish_queue(
             queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_EOF,
-                message_id=message_id,
                 req_id=req_id
             )
         )
@@ -125,12 +121,10 @@ class SumCount:
     def _send_chunk(self, req_id: int, chunk: list[str]):
         logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
 
-        message_id = next(self.message_counter)
         self.publisher.publish_queue(
             queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_DATA,
-                message_id=message_id,
                 req_id=req_id,
                 batches=len(chunk),
                 message=chunk,
@@ -146,13 +140,11 @@ class SumCount:
 
         top_process_queue_name = self.join_top_queue_names[req_id % JOIN_TOP_INSTANCES]
         logging.debug(f"Sending OPCODE_DATA message to {top_process_queue_name} for req_id={req_id}")
-
-        message_id = next(self.message_counter)
+        
         self.publisher.publish_queue(
             queue=top_process_queue_name,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_DATA,
-                message_id=message_id,
                 req_id=req_id,
                 batches=len(entries),
                 message=[ID, entries],
@@ -171,7 +163,7 @@ class SumCount:
 
     def process_message(self, message, ack, nack):
         try:
-            opcode, _, req_id, _, payload = message_protocol.internal.deserialize(message)
+            opcode, req_id, _, payload = message_protocol.internal.deserialize(message)
 
             if opcode == message_protocol.OPCODE_DATA:
                 logging.debug(f"Received OPCODE_DATA message for req_id={req_id}")
