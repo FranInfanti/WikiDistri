@@ -1,3 +1,4 @@
+import itertools
 import os
 import time
 import signal
@@ -21,11 +22,12 @@ class SumAmount:
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
         self.is_running = True
+        self.message_counter = itertools.count(1)
         self.partials: dict[int, list[int]] = {}
         self.state_lock = threading.Lock()
         self.average_queue_names = [f"{AVERAGE_QUEUE}_{i}" for i in range(AVERAGE_INSTANCES)]
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
-            host=MOM_HOST, queue_name=SUM_AMOUNT_QUEUE
+            host=MOM_HOST, queue_name=f"{SUM_AMOUNT_QUEUE}_{ID}"
         )
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST, queues=self.average_queue_names
@@ -92,10 +94,12 @@ class SumAmount:
         average_queue_name = self.average_queue_names[req_id % AVERAGE_INSTANCES]
         logging.debug(f"Sending OPCODE_DATA message to {average_queue_name} for req_id={req_id}")
 
+        message_id = next(self.message_counter)
         self.publisher.publish_queue(
             queue=average_queue_name,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_DATA,
+                message_id=message_id,
                 req_id=req_id,
                 batches=1,
                 message=[ID, words, articles],
@@ -104,7 +108,7 @@ class SumAmount:
 
     def process_message(self, message, ack, nack):
         try:
-            opcode, req_id, _, payload = message_protocol.internal.deserialize(message)
+            opcode, _, req_id, _, payload = message_protocol.internal.deserialize(message)
 
             if opcode == message_protocol.OPCODE_DATA:
                 logging.debug(f"Received an OPCODE_DATA message for req_id={req_id}")

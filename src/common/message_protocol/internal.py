@@ -2,7 +2,7 @@ import json
 
 from common import message_protocol
 
-def serialize(opcode: int, req_id: int, batches: int = 0, message = []):
+def serialize(opcode: int, message_id: int = 0, req_id: int = 0, batches: int = 0, message = []):
     """
     Returns 
 
@@ -16,7 +16,7 @@ def serialize(opcode: int, req_id: int, batches: int = 0, message = []):
         The message being send.
     """
     return json.dumps(
-        [opcode, req_id, batches, message]
+        [opcode, message_id, req_id, batches, message]
     ).encode(message_protocol.ENCODING)
 
 def deserialize(message: bytes):
@@ -24,8 +24,8 @@ def deserialize(message: bytes):
     Returns the opcode, the req_id, number of batches and the payload
     contained in the message.
     """
-    opcode, req_id, batches, payload = json.loads(
+    opcode, message_id, req_id, batches, payload = json.loads(
         message.decode(message_protocol.ENCODING)
     )
     
-    return opcode, req_id, batches, payload
+    return opcode, message_id, req_id, batches, payload

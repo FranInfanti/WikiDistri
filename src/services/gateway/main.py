@@ -20,7 +20,10 @@ BATCH_SIZE = int(os.environ["BATCH_SIZE"])
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
 GATEWAY_PREFIX = os.environ.get("GATEWAY_PREFIX", "gateway")
 FILTER_QUEUE = os.environ.get("FILTER_QUEUE", "filter_queue")
+FILTER_INSTANCES = int(os.environ["FILTER_INSTANCES"])
 WORD_READER_QUEUE = os.environ.get("WORD_READER_QUEUE", "word_reader_queue")
+WORD_READER_INSTANCES = int(os.environ["WORD_READER_INSTANCES"])
+SHARDS = {FILTER_QUEUE: FILTER_INSTANCES, WORD_READER_QUEUE: WORD_READER_INSTANCES}
 
 ENVELOPE_OVERHEAD = 64 # bytes reserved for [opcode, req_id, batches, [ ... ]]
 
@@ -75,9 +78,12 @@ class Gateway:
     def __init__(self, host: str, port: int):
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
+        self.filter_queue_names = [f"{FILTER_QUEUE}_{i}" for i in range(FILTER_INSTANCES)]
+        self.word_reader_queue_names = [f"{WORD_READER_QUEUE}_{i}" for i in range(WORD_READER_INSTANCES)]
+
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
-            queues=[FILTER_QUEUE, WORD_READER_QUEUE]
+            queues=[*self.filter_queue_names, *self.word_reader_queue_names],
         )
 
         self.input_queues = {
@@ -93,6 +99,10 @@ class Gateway:
         self.server_host = host
         self.server_port = port
         self.req_counter = itertools.count(1)
+        self.message_counters = {
+            FILTER_QUEUE: itertools.count(0),
+            WORD_READER_QUEUE: itertools.count(0),
+        }
         self.active_threads = {}
         self.active_threads_lock = threading.Lock()
         self.clients_requests = {}
@@ -148,14 +158,17 @@ class Gateway:
         logging.info("All resources have been released; goodbye")
 
     def _publish_eof(self, req_id: int, articles_sent: int):
-        message = message_protocol.internal.serialize(
-            opcode=message_protocol.OPCODE_EOF, 
-            req_id=req_id, 
-            message=articles_sent
-        )
-
         for queue in (FILTER_QUEUE, WORD_READER_QUEUE):
-            self.publisher.publish_queue(queue=queue, message=message)
+            message_id = next(self.message_counters[queue])
+            self.publisher.publish_queue(
+                queue=f"{queue}_0",
+                message=message_protocol.internal.serialize(
+                    opcode=message_protocol.OPCODE_EOF,
+                    message_id=message_id,
+                    req_id=req_id,
+                    message=articles_sent,
+                ),
+            )
 
     def _publish_records(self, queue: str, req_id: int, records: list):
         max_message_size = message_protocol.MAX_RABBITMQ_MESSAGE_SIZE
@@ -165,10 +178,12 @@ class Gateway:
             record_size = len(json.dumps(record).encode(message_protocol.ENCODING)) + 2
 
             if batch and (len(batch) >= BATCH_SIZE or batch_size + record_size > max_message_size):
+                message_id = next(self.message_counters[queue])
                 self.publisher.publish_queue(
-                    queue=queue,
+                    queue=f"{queue}_{message_id % SHARDS[queue]}",
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_DATA,
+                        message_id=message_id,
                         req_id=req_id,
                         batches=len(batch),
                         message=batch,
@@ -178,18 +193,21 @@ class Gateway:
 
             if ENVELOPE_OVERHEAD + record_size > max_message_size:
                 raise ValueError(
-                    f"Serialized message for queue {queue}, req_id={req_id} exceeds "
+                    f"Serialized message for queue {f"{queue}_{message_id % SHARDS[queue]}"}, req_id={req_id} exceeds "
                     f"RabbitMQ's {max_message_size}-byte limit"
                 )
 
             batch.append(record)
             batch_size += record_size
 
+
         if batch:
+            message_id = next(self.message_counters[queue])
             self.publisher.publish_queue(
-                queue=queue,
+                queue=f"{queue}_{message_id % SHARDS[queue]}",
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
+                    message_id=message_id,
                     req_id=req_id,
                     batches=len(batch),
                     message=batch,
@@ -242,7 +260,7 @@ class Gateway:
     def _download(self, job_id, message, ack, nack):
         req_id = None
         try:
-            opcode, req_id, batches, messages = (
+            opcode, message_id, req_id, batches, messages = (
                 message_protocol.internal.deserialize(message)
             )
 
