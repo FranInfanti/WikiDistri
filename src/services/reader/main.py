@@ -79,7 +79,7 @@ class WordReader:
         self.sum_amount_queue_names = [f"{SUM_AMOUNT_QUEUE}_{i}" for i in range(SUM_AMOUNT_INSTANCES)]
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST, 
-            queue_name=WORD_READER_QUEUE
+            queue_name=f"{WORD_READER_QUEUE}_{ID}"
         )
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
@@ -228,7 +228,7 @@ class WordReader:
                 logging.debug(f"Send OPCODE_EOF message to {SUM_AMOUNT_QUEUE} for req_id={req_id}")
                 message_id = next(self.message_counter)
                 self.publisher.publish_queue(
-                    queue=SUM_AMOUNT_QUEUE,
+                    queue=f"{SUM_AMOUNT_QUEUE}_{message_id % SUM_AMOUNT_INSTANCES}",
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
                         message_id=message_id,
@@ -246,11 +246,11 @@ class WordReader:
 
             if opcode == message_protocol.OPCODE_DATA:
                 logging.debug(f"Received OPCODE_DATA message for req_id={req_id}")
-                self._handle_articles(req_id, message_id, payload)
+                self._handle_articles(req_id, payload)
                 logging.debug("req_id=%s: processed %s articles", req_id, len(payload))
             elif opcode == message_protocol.OPCODE_EOF:
                 logging.debug(f"Received OPCODE_EOF message for req_id: {req_id}; expected messages: {payload}")
-                self.coordinator.on_eof(req_id, message_id, payload)
+                self.coordinator.on_eof(req_id, payload)
             else:
                 logging.warning(f"Unexpected OPCODE received: {opcode}")
             ack()

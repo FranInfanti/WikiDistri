@@ -99,7 +99,7 @@ class ImageDownloader:
         self.session = requests.Session()
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST,
-            queue_name=IMAGE_DOWNLOADER_QUEUE
+            queue_name=f"{IMAGE_DOWNLOADER_QUEUE}_{ID}"
         )
         self.coordinator = rabbitmq.RabbitCoordinator(
             id=ID,
@@ -144,7 +144,7 @@ class ImageDownloader:
         else:
             logging.info("All resources have been released; goodbye")
 
-    def _download_image(self, __: int, req_id: int, _: int, messages: list):
+    def _download_image(self, req_id: int, _: int, messages: list):
         logging.debug(f"Received an OPCODE_DATA message for req_id={req_id}")
         for message in messages:
             name, url, image = message
@@ -198,7 +198,7 @@ class ImageDownloader:
 
     def _process_message(self, message, ack, nack):
         try:
-            opcode, *args = message_protocol.internal.deserialize(message)
+            opcode, _, *args = message_protocol.internal.deserialize(message)
 
             if opcode == message_protocol.OPCODE_DATA:
                 self._download_image(*args)

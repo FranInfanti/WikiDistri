@@ -257,7 +257,7 @@ class Gateway:
     def _download(self, job_id, message, ack, nack):
         req_id = None
         try:
-            opcode, req_id, batches, messages = (
+            opcode, message_id, req_id, batches, messages = (
                 message_protocol.internal.deserialize(message)
             )
 

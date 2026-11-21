@@ -69,7 +69,7 @@ class Filter:
         )
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST,
-            queue_name=FILTER_QUEUE
+            queue_name=f"{FILTER_QUEUE}_{ID}"
         )
 
     def _sigterm_handler(self, _signum, _frame):
@@ -233,7 +233,7 @@ class Filter:
             if opcode == message_protocol.OPCODE_DATA:
                 self._filter_message(*args)
             elif opcode == message_protocol.OPCODE_EOF:
-                req_id, _, expected_messages = args
+                _, req_id, _, expected_messages = args
                 self.coordinator.on_eof(req_id=req_id, expected_messages=expected_messages)
             else:
                 logging.warning(f"Unexpected OPCODE received: {opcode}")

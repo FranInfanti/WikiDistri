@@ -102,7 +102,7 @@ class Average:
 
     def process_message(self, message, ack, nack):
         try:
-            opcode, req_id, _, payload = message_protocol.internal.deserialize(message)
+            opcode, _, req_id, _, payload = message_protocol.internal.deserialize(message)
 
             if opcode == message_protocol.OPCODE_DATA:
                 logging.debug(f"Received an OPCODE_DATA message from req_id={req_id}")

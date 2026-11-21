@@ -27,7 +27,7 @@ class SumAmount:
         self.state_lock = threading.Lock()
         self.average_queue_names = [f"{AVERAGE_QUEUE}_{i}" for i in range(AVERAGE_INSTANCES)]
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
-            host=MOM_HOST, queue_name=SUM_AMOUNT_QUEUE
+            host=MOM_HOST, queue_name=f"{SUM_AMOUNT_QUEUE}_{ID}"
         )
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST, queues=self.average_queue_names
@@ -108,7 +108,7 @@ class SumAmount:
 
     def process_message(self, message, ack, nack):
         try:
-            opcode, req_id, _, payload = message_protocol.internal.deserialize(message)
+            opcode, _, req_id, _, payload = message_protocol.internal.deserialize(message)
 
             if opcode == message_protocol.OPCODE_DATA:
                 logging.debug(f"Received an OPCODE_DATA message for req_id={req_id}")
