@@ -22,7 +22,7 @@ GATEWAY_PREFIX = os.environ.get("GATEWAY_PREFIX", "gateway")
 FILTER_QUEUE = os.environ.get("FILTER_QUEUE", "filter_queue")
 FILTER_INSTANCES = int(os.environ["FILTER_INSTANCES"])
 WORD_READER_QUEUE = os.environ.get("WORD_READER_QUEUE", "word_reader_queue")
-WORD_READER_INSTANCES = int(os.environ["WORD_READER_COUNT"])
+WORD_READER_INSTANCES = int(os.environ["WORD_READER_INSTANCES"])
 SHARDS = {FILTER_QUEUE: FILTER_INSTANCES, WORD_READER_QUEUE: WORD_READER_INSTANCES}
 
 ENVELOPE_OVERHEAD = 64 # bytes reserved for [opcode, req_id, batches, [ ... ]]
@@ -83,7 +83,7 @@ class Gateway:
 
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
-            queues=[*self.sum_count_queue_names, *self.join_average_queue_names, *self.sum_amount_queue_names],
+            queues=[*self.filter_queue_names, *self.word_reader_queue_names],
         )
 
         self.input_queues = {
