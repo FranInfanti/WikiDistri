@@ -1,4 +1,3 @@
-import itertools
 import os
 import time
 import signal
@@ -95,11 +94,10 @@ class ImageDownloader:
         signal.signal(signalnum=signal.SIGTERM, handler=self._sigterm_handler)
         
         self.is_running = True
-        self.message_counter = itertools.count(1)
         self.session = requests.Session()
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST,
-            queue_name=f"{IMAGE_DOWNLOADER_QUEUE}_{ID}"
+            queue_name=IMAGE_DOWNLOADER_QUEUE
         )
         self.coordinator = rabbitmq.RabbitCoordinator(
             id=ID,
@@ -170,13 +168,10 @@ class ImageDownloader:
                     logging.warning(f"Could not resolve thumbnail for {image}: {e}")
 
             logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
-
-            message_id = next(self.message_counter)
             self.publisher.publish_queue(
                 queue=f"{GATEWAY_PREFIX}_2",
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
-                    message_id=message_id,
                     req_id=req_id,
                     batches=1,
                     message=[[name, url, image_url, image_type, image_bytes]]
@@ -198,7 +193,7 @@ class ImageDownloader:
 
     def _process_message(self, message, ack, nack):
         try:
-            opcode, _, *args = message_protocol.internal.deserialize(message)
+            opcode, *args = message_protocol.internal.deserialize(message)
 
             if opcode == message_protocol.OPCODE_DATA:
                 self._download_image(*args)

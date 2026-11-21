@@ -1,4 +1,3 @@
-import itertools
 import os
 import time
 import signal
@@ -20,7 +19,6 @@ class Average:
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
         self.is_running = True
-        self.message_counter = itertools.count(1)
         self.requests: dict[int, tuple[set[int], list[int]]] = {}
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST, queue_name=f"{AVERAGE_QUEUE}_{ID}"
@@ -74,11 +72,9 @@ class Average:
         average = words / articles if articles > 0 else 0.0
         logging.info(f"The average calculated for the client with req_id={req_id} is {words}/{articles} = {average}")
 
-        message_id = next(self.message_counter)
         data_message = message_protocol.internal.serialize(
             opcode=message_protocol.OPCODE_DATA,
-            message_id=message_id,
-            req_id=req_id,
+            req_id=req_id, 
             batches=1, 
             message=average,
         )
@@ -87,10 +83,8 @@ class Average:
         for name in self.join_average_queue_names:
             self.publisher.publish_queue(name, data_message)
 
-        message_id = next(self.message_counter)
         eof_message = message_protocol.internal.serialize(
             opcode=message_protocol.OPCODE_EOF,
-            message_id=message_id,
             req_id=req_id,
             batches=1,
             message=0
@@ -102,7 +96,7 @@ class Average:
 
     def process_message(self, message, ack, nack):
         try:
-            opcode, _, req_id, _, payload = message_protocol.internal.deserialize(message)
+            opcode, req_id, _, payload = message_protocol.internal.deserialize(message)
 
             if opcode == message_protocol.OPCODE_DATA:
                 logging.debug(f"Received an OPCODE_DATA message from req_id={req_id}")

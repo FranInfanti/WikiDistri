@@ -1,4 +1,3 @@
-import itertools
 import os
 import re
 import time
@@ -16,7 +15,6 @@ WORD_READER_PREFIX = os.environ.get("WORD_READER_PREFIX", "word_reader")
 WORD_READER_QUEUE = os.environ.get("WORD_READER_QUEUE", "word_reader_queue")
 SUM_COUNT_INSTANCES = int(os.environ.get("SUM_COUNT_INSTANCES", 1))
 SUM_COUNT_QUEUE = os.environ.get("SUM_COUNT_QUEUE", "sum_count_queue")
-SUM_AMOUNT_INSTANCES = int(os.environ.get("SUM_AMOUNT_INSTANCES", 1))
 SUM_AMOUNT_QUEUE = os.environ.get("SUM_AMOUNT_QUEUE", "sum_amount_queue")
 JOIN_AVERAGE_INSTANCES = int(os.environ.get("JOIN_AVERAGE_INSTANCES", 1))
 JOIN_AVERAGE_QUEUE = os.environ.get("JOIN_AVERAGE_QUEUE", "join_average_queue")
@@ -73,17 +71,15 @@ class WordReader:
         signal.signal(signal.SIGTERM, self._sigterm_handler)
  
         self.is_running = True
-        self.message_counter = itertools.count(1)
         self.sum_count_queue_names = [f"{SUM_COUNT_QUEUE}_{i}" for i in range(SUM_COUNT_INSTANCES)]
         self.join_average_queue_names = [f"{JOIN_AVERAGE_QUEUE}_{i}" for i in range(JOIN_AVERAGE_INSTANCES)]
-        self.sum_amount_queue_names = [f"{SUM_AMOUNT_QUEUE}_{i}" for i in range(SUM_AMOUNT_INSTANCES)]
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST, 
-            queue_name=f"{WORD_READER_QUEUE}_{ID}"
+            queue_name=WORD_READER_QUEUE
         )
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
-            queues=[*self.sum_count_queue_names, *self.join_average_queue_names, *self.sum_amount_queue_names],
+            queues=[*self.sum_count_queue_names, *self.join_average_queue_names, SUM_AMOUNT_QUEUE],
         )
         self.coordinator = rabbitmq.RabbitCoordinator(
             id=ID,
@@ -152,12 +148,10 @@ class WordReader:
         for shard, shard_words in words_by_shard.items():
             message = [[word, en, fr] for word, (en, fr) in shard_words.items()]
             logging.debug(f"Send OPCODE_DATA message to {self.sum_count_queue_names[shard]} for req_id={req_id}")
-            message_id = next(self.message_counter)
             self.publisher.publish_queue(
                 queue=self.sum_count_queue_names[shard],
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
-                    message_id=message_id,
                     req_id=req_id, 
                     batches=len(message), 
                     message=message,
@@ -168,12 +162,10 @@ class WordReader:
     def _send_word_count(self, req_id: int, join_batches: dict, amount_batch: list):
         for shard, batch in join_batches.items():
             logging.debug(f"Send OPCODE_DATA message to {self.join_average_queue_names[shard]} for req_id={req_id}")
-            message_id = next(self.message_counter)
             self.publisher.publish_queue(
                 queue=self.join_average_queue_names[shard],
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
-                    message_id=message_id,
                     req_id=req_id, 
                     batches=len(batch), 
                     message=batch,
@@ -183,12 +175,10 @@ class WordReader:
 
         if amount_batch:
             logging.debug(f"Send OPCODE_DATA message to {SUM_AMOUNT_QUEUE} for req_id={req_id}")
-            message_id = next(self.message_counter)
             self.publisher.publish_queue(
-                queue=f"{SUM_AMOUNT_QUEUE}_{message_id % SUM_AMOUNT_INSTANCES}",
+                queue=SUM_AMOUNT_QUEUE,
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
-                    message_id=message_id,
                     req_id=req_id, batches=len(amount_batch), message=amount_batch,
                 ),
             )
@@ -200,12 +190,10 @@ class WordReader:
         for key, sent in sent_messages:
             if key == SUM_COUNT_QUEUE:
                 logging.debug(f"Send OPCODE_EOF message to {self.sum_count_queue_names[0]} for req_id={req_id}")
-                message_id = next(self.message_counter)
                 self.publisher.publish_queue(
                     queue=self.sum_count_queue_names[0],
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
-                        message_id=message_id,
                         req_id=req_id,
                         batches=1,
                         message=sent,
@@ -213,12 +201,10 @@ class WordReader:
                 )
             elif key == JOIN_AVERAGE_QUEUE:
                 logging.debug(f"Send OPCODE_EOF message to {self.join_average_queue_names[0]} for req_id={req_id}")
-                message_id = next(self.message_counter)
                 self.publisher.publish_queue(
                     queue=self.join_average_queue_names[0],
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
-                        message_id=message_id,
                         req_id=req_id,
                         batches=1,
                         message=sent,
@@ -226,12 +212,10 @@ class WordReader:
                 )
             elif key == SUM_AMOUNT_QUEUE:
                 logging.debug(f"Send OPCODE_EOF message to {SUM_AMOUNT_QUEUE} for req_id={req_id}")
-                message_id = next(self.message_counter)
                 self.publisher.publish_queue(
-                    queue=f"{SUM_AMOUNT_QUEUE}_{message_id % SUM_AMOUNT_INSTANCES}",
+                    queue=SUM_AMOUNT_QUEUE,
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
-                        message_id=message_id,
                         req_id=req_id,
                         batches=1,
                         message=sent,
@@ -242,7 +226,7 @@ class WordReader:
             
     def process_message(self, message, ack, nack):
         try:
-            opcode, message_id, req_id, _batches, payload = message_protocol.internal.deserialize(message)
+            opcode, req_id, _batches, payload = message_protocol.internal.deserialize(message)
 
             if opcode == message_protocol.OPCODE_DATA:
                 logging.debug(f"Received OPCODE_DATA message for req_id={req_id}")

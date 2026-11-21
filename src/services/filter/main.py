@@ -1,4 +1,3 @@
-import itertools
 import re
 import os
 import json
@@ -17,7 +16,6 @@ GATEWAY_PREFIX = os.environ.get("GATEWAY_PREFIX", "gateway")
 FILTER_INSTANCES = int(os.environ.get("FILTER_INSTANCES", 1))
 FILTER_PREFIX = os.environ.get("FILTER_PREFIX", "filter")
 FILTER_QUEUE = os.environ.get("FILTER_QUEUE", "filter_queue")
-IMAGE_DOWNLOADER_INSTANCES = int(os.environ.get("IMAGE_DOWNLOADER_INSTANCES", 1))
 IMAGE_DOWNLOADER_QUEUE = os.environ.get("IMAGE_DOWNLOADER_QUEUE", "image_downloader_queue") 
 
 ENVELOPE_OVERHEAD = 64 # bytes reserved for [opcode, req_id, batches, [ ... ]]
@@ -46,15 +44,13 @@ class Filter:
             raise ValueError("BATCH_SIZE must be greater than zero")
 
         signal.signal(signal.SIGTERM, self._sigterm_handler)
-        self.image_downloader_queue_names = [f"{IMAGE_DOWNLOADER_QUEUE}_{i}" for i in range(IMAGE_DOWNLOADER_INSTANCES)]
         
         self.is_running = True
-        self.message_counter = itertools.count(1)
         self.batches = {}
         self.batches_lock = threading.Lock()
         self.publisher_downloader = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
-            queues=[*self.image_downloader_queue_names],
+            queues=[IMAGE_DOWNLOADER_QUEUE],
         )
         self.publisher_gateway = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
@@ -69,7 +65,7 @@ class Filter:
         )
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST,
-            queue_name=f"{FILTER_QUEUE}_{ID}"
+            queue_name=FILTER_QUEUE
         )
 
     def _sigterm_handler(self, _signum, _frame):
@@ -107,7 +103,7 @@ class Filter:
     def _publish_batch(self, req_id: int, dest: str, batch: list):
         if dest == self._GATEWAY_QUEUE:
             publisher = self.publisher_gateway
-        elif dest in self.image_downloader_queue_names:
+        elif dest == IMAGE_DOWNLOADER_QUEUE:
             publisher = self.publisher_downloader
         else:
             raise ValueError(f"Unknown batch destination: {dest}")
@@ -118,13 +114,10 @@ class Filter:
             dest,
             req_id,
         )
-
-        message_id = next(self.message_counter)
         publisher.publish_queue(
             queue=dest,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_DATA,
-                message_id=message_id,
                 req_id=req_id,
                 batches=len(batch),
                 message=batch,
@@ -163,7 +156,7 @@ class Filter:
                 self._publish_batch(req_id, dest, batch)
                 del self.batches[key]
 
-    def _filter_message(self, __: int, req_id: int, _: int, messages: list[list]):
+    def _filter_message(self, req_id: int, _: int, messages: list[list]):
         logging.debug(f"Received an OPCODE_DATA message for req_id={req_id}")
         
         for message in messages:
@@ -183,10 +176,9 @@ class Filter:
                 )
                 
             if date_modified.year <= 2020 and section_contains(sections, "biography", "biographie"):
-                message_id = next(self.message_counter)
                 self._batch_record(
                     req_id=req_id,
-                    dest=self.image_downloader_queue_names[message_id % IMAGE_DOWNLOADER_INSTANCES],
+                    dest=IMAGE_DOWNLOADER_QUEUE,
                     record=[name, url, image]
                 )
                 self.coordinator.record_sent(who=IMAGE_DOWNLOADER_QUEUE, req_id=req_id)
@@ -196,12 +188,10 @@ class Filter:
     def _on_recv_all(self, req_id: int, sent_messages: list):
         logging.debug(f"Sending OPCODE_EOF message to {self._GATEWAY_QUEUE} for req_id={req_id}")
 
-        message_id = next(self.message_counter)
         self.publisher_gateway.publish_queue(
             queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_EOF,
-                message_id=message_id,
                 req_id=req_id
             )
         )
@@ -215,12 +205,10 @@ class Filter:
             raise ValueError(f"Unknown key; expected: {IMAGE_DOWNLOADER_QUEUE}, received: {key}")
 
         logging.debug(f"Sending OPCODE_EOF message to {IMAGE_DOWNLOADER_QUEUE} for req_id={req_id}; expected messages: {sent}")
-        message_id = next(self.message_counter)
         self.publisher_downloader.publish_queue(
-            queue=self.image_downloader_queue_names[message_id % IMAGE_DOWNLOADER_INSTANCES],
+            queue=IMAGE_DOWNLOADER_QUEUE,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_EOF,
-                message_id=message_id,
                 req_id=req_id,
                 batches=1,
                 message=sent
@@ -233,7 +221,7 @@ class Filter:
             if opcode == message_protocol.OPCODE_DATA:
                 self._filter_message(*args)
             elif opcode == message_protocol.OPCODE_EOF:
-                _, req_id, _, expected_messages = args
+                req_id, _, expected_messages = args
                 self.coordinator.on_eof(req_id=req_id, expected_messages=expected_messages)
             else:
                 logging.warning(f"Unexpected OPCODE received: {opcode}")
