@@ -58,6 +58,7 @@ class RabbitPublisher:
 
         completed.wait()
         if request[1]:
+            # pyrefly: ignore[bad-raise]
             raise request[1]
 
     def publish_exchange(self, message: bytes, exchange_id: int = None):
@@ -71,6 +72,7 @@ class RabbitPublisher:
 
         completed.wait()
         if request[1]:
+            # pyrefly: ignore[bad-raise]
             raise request[1]
 
     def _run(self):
