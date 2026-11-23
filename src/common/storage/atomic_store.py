@@ -4,7 +4,7 @@ import json
 import tempfile
 import threading
 
-class PhaseManager:
+class AtomicStore:
 
     def __init__(self, path: str):
         self.path = path
@@ -31,9 +31,16 @@ class PhaseManager:
             self._data.setdefault(str(req_id), {}).update(fields)
             self._write()
 
-    def pending(self, stage: str) -> list[int]:
+    def pending(self, stage: str) -> list[str]:
+        """Return all keys whose record has the given stage."""
         with self._lock:
-            return [int(k) for k, v in self._data.items() if v.get("stage") == stage]
+            return [k for k, v in self._data.items() if v.get("stage") == stage]
+
+    def delete(self, key: str):
+        """Remove a key entirely."""
+        with self._lock:
+            self._data.pop(str(key), None)
+            self._write()
 
     def _write(self):
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(self.path) or ".")

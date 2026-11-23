@@ -4,7 +4,7 @@ import logging
 import threading
 
 from typing import Callable
-from common import middleware, rabbitmq, message_protocol
+from common import middleware, rabbitmq, message_protocol, storage
 
 COMMITTING_PHASE = "COMMITTING"
 COMMITED_PHASE = "COMMITTED"
@@ -49,7 +49,7 @@ class RabbitCoordinator:
         )
         
         self._consumer = None
-        self._phase_manager = rabbitmq.PhaseManager(state_path or f"{self.prefix}_{self.id}_state.json")
+        self._phase_manager = storage.AtomicStore(state_path or f"{self.prefix}_{self.id}_state.json")
 
         self._locks: dict[int, threading.RLock] = {}
         self._locks_guard = threading.Lock()
