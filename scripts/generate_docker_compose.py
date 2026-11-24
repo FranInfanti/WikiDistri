@@ -146,9 +146,9 @@ def build_compose(
                 "GATEWAY_PREFIX": "gateway",
                 "FILTER_INSTANCES": str(filters),
                 "FILTER_PREFIX": "filter",
-                "FILTER_QUEUE": "filter_queue",
+                "FILTER_QUEUE_PREFIX": "filter_queue",
                 "IMAGE_DOWNLOADER_INSTANCES": str(image_downloaders),
-                "IMAGE_DOWNLOADER_QUEUE": "image_downloader_queue",
+                "IMAGE_DOWNLOADER_PREFIX": "image_downloader_queue",
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},

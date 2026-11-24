@@ -16,7 +16,7 @@ MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
 GATEWAY_PREFIX = os.environ.get("GATEWAY_PREFIX", "gateway")
 FILTER_INSTANCES = int(os.environ.get("FILTER_INSTANCES", 1))
 FILTER_PREFIX = os.environ.get("FILTER_PREFIX", "filter")
-FILTER_QUEUE = os.environ.get("FILTER_QUEUE", "filter_queue")
+FILTER_QUEUE_PREFIX = os.environ.get("FILTER_QUEUE_PREFIX", "filter_queue")
 IMAGE_DOWNLOADER_INSTANCES = int(os.environ.get("IMAGE_DOWNLOADER_INSTANCES", 1))
 IMAGE_DOWNLOADER_PREFIX = os.environ.get("IMAGE_DOWNLOADER_PREFIX", "image_downloader_queue")
 
@@ -92,7 +92,7 @@ class Filter:
         )
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST,
-            queue_name=f"{FILTER_QUEUE}_{ID}"
+            queue_name=f"{FILTER_QUEUE_PREFIX}_{ID}"
         )
 
 
