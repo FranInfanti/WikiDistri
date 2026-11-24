@@ -4,7 +4,7 @@ import logging
 import threading
 
 from typing import Callable
-from common import middleware, rabbitmq, message_protocol, storage
+from common import middleware, rabbitmq, message_protocol, storage, fault_tolerance
 
 COMMITTING_PHASE = "COMMITTING"
 COMMITED_PHASE = "COMMITTED"
@@ -56,13 +56,6 @@ class RabbitCoordinator:
         
         self._timers: dict[tuple, threading.Timer] = {}
         self._timers_lock = threading.Lock()
-
-        self.__post_init__()
-
-    def __post_init__(self):
-        for req_id in self._phase_manager.pending(COMMITTING_PHASE):
-            logging.info(f"Resuming COMMIT for req_id={req_id} after restart")
-            self._start_commit(req_id)
 
     def _req_lock(self, req_id: int):
         with self._locks_guard:
@@ -202,9 +195,10 @@ class RabbitCoordinator:
                 return
 
             logging.debug(f"Sending OPCODE_PREPARE message for req_id={req_id}")
+            fault_tolerance.crash(at="BEFORE_SEND_PREPARE")
             self._publish_prepare(req_id)
+            fault_tolerance.crash(at="AFTER_SEND_PREPARE")
             self._schedule("prepare", self._retry_prepare, req_id)
-
 
     def _process_prepare(self, req_id: int, _: int, id: int):
         with self._req_lock(req_id):
@@ -218,6 +212,7 @@ class RabbitCoordinator:
                 req_id,
             )
 
+            fault_tolerance.crash(at="BEFORE_SEND_OK")
             logging.debug(f"Sending OPCODE_OK message for req_id={req_id}")
             self._publisher.publish_exchange(
                 message=message_protocol.internal.serialize(
@@ -228,6 +223,7 @@ class RabbitCoordinator:
                 ),
                 exchange_id=id
             )
+            fault_tolerance.crash(at="AFTER_SEND_OK")
 
     def _process_ok(self, req_id: int, _: int, messages: list):
         with self._req_lock(req_id):
@@ -249,12 +245,14 @@ class RabbitCoordinator:
 
             if tracker.all_recv():
                 logging.info(f"All messages have been processed for req_id={req_id}")
+                fault_tolerance.crash("BEFORE_COMMITTING_PHASE")
                 self._phase_manager.update(
                     req_id,
                     stage=COMMITTING_PHASE,
                     result=[list(kv) for kv in tracker.sent_by_key()],
                 )
                 self._cancel("prepare", req_id)
+                fault_tolerance.crash("AFTER_COMMITTING_PHASE")
                 self._start_commit(req_id)
             else:
                 self._schedule("prepare", self._retry_prepare, req_id)
