@@ -97,10 +97,22 @@ class WordReader:
             host=MOM_HOST, 
             queue_name=f"{WORD_READER_QUEUE}_{ID}"
         )
-        self.publisher = rabbitmq.RabbitPublisher(
+
+        self.count_publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
-            queues=[*self.sum_count_queue_names, *self.join_average_queue_names, *self.sum_amount_queue_names],
+            queues=[*self.sum_count_queue_names],
         )
+
+        self.amount_publisher = rabbitmq.RabbitPublisher(
+            host=MOM_HOST,
+            queues=[*self.sum_amount_queue_names],
+        )
+
+        self.join_publisher = rabbitmq.RabbitPublisher(
+            host=MOM_HOST,
+            queues=[*self.join_average_queue_names],
+        )
+
         self.coordinator = rabbitmq.RabbitCoordinator(
             id=ID,
             host=MOM_HOST,
@@ -208,17 +220,15 @@ class WordReader:
         logging.info("Waiting up to %s seconds for active threads to stop", self._TIMEOUT)
 
         timed_out = []
-        try:
-            if self.coordinator.stop(timeout=max(0.0, deadline - time.monotonic())):
-                timed_out.append("coordinator")
-        except Exception:
-            logging.warning("Error stopping the coordinator")
-
-        try:
-            if self.publisher.stop(timeout=max(0.0, deadline - time.monotonic())):
-                timed_out.append("publisher")
-        except Exception:
-            logging.warning("Error stopping the publisher")
+        components = (
+            ("coordinator", self.coordinator.stop),
+            ("count publisher", self.count_publisher.stop),
+            ("amount publisher", self.amount_publisher.stop),
+            ("join publisher", self.join_publisher.stop),
+        )
+        for name, stop in components:
+            if stop(timeout=max(0.0, deadline - time.monotonic())):
+                timed_out.append(name)
 
         try:
             self.input_queue.close()
@@ -314,7 +324,7 @@ class WordReader:
             message = [[word, en, fr] for word, (en, fr) in shard_words.items()]
             logging.debug(f"Send OPCODE_DATA message to {self.sum_count_queue_names[shard]} for req_id={req_id}")
             message_id = zlib.crc32(f"{WORD_READER_PREFIX}_{ID}_{batch_id}_count_{shard}".encode())
-            self.publisher.publish_queue(
+            self.count_publisher.publish_queue(
                 queue=self.sum_count_queue_names[shard],
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
@@ -332,7 +342,7 @@ class WordReader:
         for shard, batch in join_batches.items():
             logging.debug(f"Send OPCODE_DATA message to {self.join_average_queue_names[shard]} for req_id={req_id}")
             message_id = zlib.crc32(f"{WORD_READER_PREFIX}_{ID}_{batch_id}_join_{shard}".encode())
-            self.publisher.publish_queue(
+            self.join_publisher.publish_queue(
                 queue=self.join_average_queue_names[shard],
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
@@ -347,7 +357,7 @@ class WordReader:
         if amount_batch:
             logging.debug(f"Send OPCODE_DATA message to {SUM_AMOUNT_QUEUE} for req_id={req_id}")
             message_id = zlib.crc32(f"{WORD_READER_PREFIX}_{ID}_{batch_id}_amount".encode())
-            self.publisher.publish_queue(
+            self.amount_publisher.publish_queue(
                 queue=f"{SUM_AMOUNT_QUEUE}_{message_id % SUM_AMOUNT_INSTANCES}",
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
@@ -368,7 +378,7 @@ class WordReader:
             if key == SUM_COUNT_QUEUE:
                 logging.debug(f"Send OPCODE_EOF message to {self.sum_count_queue_names[0]} for req_id={req_id}")
                 message_id = zlib.crc32(f"{WORD_READER_PREFIX}_{ID}_{batch_id}_{key}".encode())
-                self.publisher.publish_queue(
+                self.count_publisher.publish_queue(
                     queue=self.sum_count_queue_names[0],
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
@@ -381,7 +391,7 @@ class WordReader:
             elif key == JOIN_AVERAGE_QUEUE:
                 logging.debug(f"Send OPCODE_EOF message to {self.join_average_queue_names[0]} for req_id={req_id}")
                 message_id = zlib.crc32(f"{WORD_READER_PREFIX}_{ID}_{batch_id}_{key}".encode())
-                self.publisher.publish_queue(
+                self.join_publisher.publish_queue(
                     queue=self.join_average_queue_names[0],
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
@@ -394,7 +404,7 @@ class WordReader:
             elif key == SUM_AMOUNT_QUEUE:
                 logging.debug(f"Send OPCODE_EOF message to {SUM_AMOUNT_QUEUE} for req_id={req_id}")
                 message_id = zlib.crc32(f"{WORD_READER_PREFIX}_{ID}_{batch_id}_{key}".encode())
-                self.publisher.publish_queue(
+                self.amount_publisher.publish_queue(
                     queue=f"{SUM_AMOUNT_QUEUE}_{message_id % SUM_AMOUNT_INSTANCES}",
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
