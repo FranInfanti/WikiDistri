@@ -277,6 +277,13 @@ class Gateway:
                 ack() # client no longer exists, but we still ack the message
                 return
 
+            if client_req.record_message(message_id):
+                logging.debug(
+                    f"Discarding duplicate message_id={message_id} for req_id={req_id} from job_id={job_id}"
+                )
+                ack()
+                return
+
             if opcode == message_protocol.OPCODE_DATA:
                 message_bytes = job_format(job_id, messages)
                 client_req.send(

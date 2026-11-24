@@ -8,7 +8,7 @@ import threading
 
 from datetime import datetime
 from collections.abc import Callable
-from common import entity, message_protocol, middleware, rabbitmq, storage
+from common import entity, message_protocol, middleware, rabbitmq, storage, fault_tolerance
 
 ID = int(os.environ["ID"])
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "1000"))
@@ -27,7 +27,7 @@ IMAGE_DOWNLOADER_PREFIX = os.environ.get("IMAGE_DOWNLOADER_PREFIX", "image_downl
 #   "eof:{req_id}:{batch_id}"   → EOF messages
 #       EOF_PENDING   : {"stage": EOF_PENDING,   "expected": N, "batch_id": N}
 #       EOF_COMPLETED : {"stage": EOF_COMPLETED}
-FILTER_STATE_PATH = os.environ.get("FILTER_STATE_PATH", f"tmp/{FILTER_PREFIX}/{ID}/state.json")
+FILTER_STATE_PATH = os.environ.get("FILTER_STATE_PATH", f"tmp/state.json")
 
 PENDING_STAGE = "PENDING"
 COMPLETED_STAGE = "COMPLETED"
@@ -80,8 +80,6 @@ class Filter:
         # read by the coordinator thread in _on_recv_all.
         self._pending_eof: dict[int, str] = {}
 
-        self.__post_init__()
-
         self.coordinator = rabbitmq.RabbitCoordinator(
             id=ID,
             host=MOM_HOST,
@@ -89,12 +87,16 @@ class Filter:
             instances=FILTER_INSTANCES,
             on_all_recv=self._on_recv_all,
             get_tracker=self._get_tracker,
+            state_path=f"tmp/eof/state.json"
         )
+        self.coordinator.start()
+
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST,
             queue_name=f"{FILTER_QUEUE_PREFIX}_{ID}"
         )
 
+        self.__post_init__()
 
     def __post_init__(self):
         # Reconstruct tracker totals by summing the deltas of every COMPLETED data batch.
@@ -154,9 +156,12 @@ class Filter:
 
             rec = self._state.get(eof_key)
 
-            logging.info("Replaying EOF_PENDING req_id=%s", req_id)
+            logging.info("Replaying EOF_PENDING req_id=%s with expected_messages=%s", req_id, rec.get("expected", 0))
             self._pending_eof[req_id] = eof_key
-            self.coordinator.on_eof(req_id=req_id, expected_messages=rec.get("expected", 0))
+            already_finished = self.coordinator.on_eof(req_id=req_id, expected_messages=rec.get("expected", 0))
+            if already_finished:
+                self._state.put(eof_key, {"stage": EOF_COMPLETED_STAGE})
+                self._pending_eof.pop(req_id, None)
 
 
     def _new_tracker(self):
@@ -233,15 +238,13 @@ class Filter:
 
     def _flush_batches(self, out: dict, req_id: int, batch_id: int):
         for dest, batch in out.items():
+            if not batch:
+                continue
+
             message_id = zlib.crc32(f"{FILTER_PREFIX}_{ID}_{batch_id}_{dest}".encode())
             self._publish_batch(req_id=req_id, dest=dest, batch=batch, message_id=message_id)
 
-    def _filter_message(self, batch_id: int, req_id: int, _: int, messages: list[list]) -> tuple[int, int]:
-        """Filter and forward a batch. Returns (recv_count, sent_to_downloader_count).
-
-        Pure data transformation + publish: does NOT touch any persistent state
-        or in-memory trackers.  The caller is responsible for recording deltas.
-        """
+    def _filter_message(self, batch_id: int, req_id: int, _: int, messages: list[list]):
         logging.debug(f"Received an OPCODE_DATA message for req_id={req_id}")
 
         out = {
@@ -308,9 +311,11 @@ class Filter:
         )
 
         # Mark this EOF as fully completed and clean up all state for req_id.
+        fault_tolerance.crash(at="AFTER_EOF_COMPLETED")
         self._state.put(eof_key, {"stage": EOF_COMPLETED_STAGE})
-        self._pending_eof.pop(req_id, None)
+        fault_tolerance.crash(at="BEFORE_EOF_COMPLETED")
 
+        self._pending_eof.pop(req_id, None)
         with self._trackers_lock:
             self._trackers.pop(req_id, None)
 
@@ -319,13 +324,22 @@ class Filter:
         batch_id, req_id, _, messages = args
         msg_key = f"data:{req_id}:{batch_id}"
 
-        already_pending = self._state.get(msg_key).get("stage") == PENDING_STAGE
-        if not already_pending:
-            # Persist payload + mark PENDING in one atomic write before ACK.
-            self._state.put(msg_key, {"stage": PENDING_STAGE, "payload": messages})
+        stage = self._state.get(msg_key).get("stage")
+        if stage is not None:
+            logging.warning(f"Duplicate redelivery from broker for req_id={req_id}; acknowledge and discard")
+            ack()
+            return
+
+        # Persist payload + mark PENDING in one atomic write before ACK.
+        fault_tolerance.crash(at="BEFORE_SAVE_PENDING")
+        self._state.put(msg_key, {"stage": PENDING_STAGE, "payload": messages})
+        fault_tolerance.crash(at="AFTER_SAVE_PENDING")
 
         ack()
+        fault_tolerance.crash(at="AFTER_DATA_ACK")
+
         recv, sent = self._filter_message(*args)
+        fault_tolerance.crash(at="AFTER_DATA_FILTER")
 
         with self._trackers_lock:
             tracker = self._get_tracker(req_id)
@@ -337,25 +351,33 @@ class Filter:
             "recv_delta": recv,
             "sent_delta": sent,
         })
+        fault_tolerance.crash(at="AFTER_DATA_COMPLETED")
 
     def _handle_eof(self, ack: Callable, *args):
         batch_id, req_id, _, expected_messages = args
         eof_key = f"eof:{req_id}:{batch_id}"
 
+        stage = self._state.get(eof_key).get("stage")
+        if stage is not None: # It is either on EOF_COMPLETED_STAGE or EOF_PENDING_STAGE
+            logging.warning(f"Duplicate redelivery from broker for req_id={req_id}; acknowledge and discard")
+            ack()
+            return
+
         # Persist EOF intent before ACK so we can re-trigger coordinator after a crash.
+        fault_tolerance.crash(at="BEFORE_SAVE_EOF")
         self._state.put(eof_key, {
             "stage": EOF_PENDING_STAGE,
             "expected": expected_messages,
             "batch_id": batch_id,
         })
+        fault_tolerance.crash(at="AFTER_SAVE_EOF")
+    
         self._pending_eof[req_id] = eof_key
 
         ack()
-        already_finished = self.coordinator.on_eof(req_id=req_id, expected_messages=expected_messages)
+        fault_tolerance.crash(at="AFTER_EOF_ACK")
 
-        if already_finished:
-            self._state.put(eof_key, {"stage": EOF_COMPLETED_STAGE})
-            self._pending_eof.pop(req_id, None)
+        self.coordinator.on_eof(req_id=req_id, expected_messages=expected_messages)
 
     def _process_message(self, message, ack, nack):
         opcode, *args = message_protocol.internal.deserialize(message)
@@ -375,7 +397,6 @@ class Filter:
     def start(self):
         try:
             logging.info("Waiting to receive messages...")
-            self.coordinator.start()
             self.input_queue.start_consuming(self._process_message)
         except:
             if self._is_running:

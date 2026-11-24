@@ -9,6 +9,9 @@ class AtomicStore:
     def __init__(self, path: str):
         self.path = path
         self._lock = threading.Lock()
+        parent_dir = os.path.dirname(self.path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
         try:
             with open(path) as f:
                 self._data = json.load(f)
@@ -43,7 +46,9 @@ class AtomicStore:
             self._write()
 
     def _write(self):
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(self.path) or ".")
+        target_dir = os.path.dirname(self.path) or "."
+        os.makedirs(target_dir, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=target_dir)
         with os.fdopen(fd, "w") as f:
             json.dump(self._data, f)
             f.flush()

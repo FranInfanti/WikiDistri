@@ -19,7 +19,16 @@ class Client:
             job_id: False
             for job_id in range(1, jobs + 1)
         }
+        self.seen_messages = set()
         self.state_lock = threading.Lock()
+
+    def record_message(self, message_id) -> bool:
+        """Returns True if the message was already processed (duplicate), False if it is new."""
+        with self.state_lock:
+            if message_id in self.seen_messages:
+                return True
+            self.seen_messages.add(message_id)
+            return False
 
     def record_articles_sent(self, count: int):
         self.articles_sent += count
