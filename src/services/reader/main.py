@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 import zlib
 from stopwords import STOPWORDS
-from common import entity, middleware, message_protocol, hashing, rabbitmq, storage
+from common import entity, fault_tolerance, middleware, message_protocol, hashing, rabbitmq, storage
 
 ID = int(os.environ["ID"])
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
@@ -89,7 +89,6 @@ class WordReader:
         self._state = storage.AtomicStore(READER_STATE_PATH)
 
         self._pending_eof: dict[int, str] = {}
-
 
         self.sum_count_queue_names = [f"{SUM_COUNT_QUEUE}_{i}" for i in range(SUM_COUNT_INSTANCES)]
         self.join_average_queue_names = [f"{JOIN_AVERAGE_QUEUE}_{i}" for i in range(JOIN_AVERAGE_INSTANCES)]
@@ -252,13 +251,21 @@ class WordReader:
         batch_id, req_id, batches, messages = args
         msg_key = f"data:{req_id}:{batch_id}"
 
-        already_pending = self._state.get(msg_key).get("stage") == PENDING_STAGE
-        if not already_pending:
-            self._state.put(msg_key, {"stage": PENDING_STAGE, "batches": batches, "payload": messages})
+        stage = self._state.get(msg_key).get("stage")
+        if stage is not None:
+            logging.warning(f"Duplicate redelivery from broker for req_id={req_id}; acknowledge and discard")
+            ack()
+            return
+
+        fault_tolerance.crash(at="BEFORE_SAVE_PENDING")
+        self._state.put(msg_key, {"stage": PENDING_STAGE, "batches": batches, "payload": messages})
+        fault_tolerance.crash(at="AFTER_SAVE_PENDING")
 
         ack()
+        fault_tolerance.crash(at="AFTER_DATA_ACK")
 
         sent_count, sent_amount, sent_join = self._handle_articles(batch_id, req_id, messages)
+        fault_tolerance.crash(at="AFTER_DATA_READER")
 
         with self._trackers_lock:
             tracker = self._get_tracker(req_id)
@@ -274,24 +281,32 @@ class WordReader:
             "sent_delta_sum_amount": sent_amount,
             "sent_delta_join": sent_join,
         })
+        fault_tolerance.crash(at="AFTER_DATA_COMPLETED")
 
     def _handle_eof(self, ack: Callable, *args):
         batch_id, req_id, _, expected_messages = args
         eof_key = f"eof:{req_id}:{batch_id}"
 
+        stage = self._state.get(eof_key).get("stage")
+        if stage is not None: 
+            logging.warning(f"Duplicate redelivery from broker for req_id={req_id}; acknowledge and discard")
+            ack()
+            return
+
+        fault_tolerance.crash(at="BEFORE_SAVE_EOF")
         self._state.put(eof_key, {
             "stage": EOF_PENDING_STAGE,
             "expected": expected_messages,
             "batch_id": batch_id,
         })
+        fault_tolerance.crash(at="AFTER_SAVE_EOF")
+
         self._pending_eof[req_id] = eof_key
 
         ack()
-        already_finished = self.coordinator.on_eof(req_id, expected_messages)
+        fault_tolerance.crash(at="AFTER_EOF_ACK")
 
-        if already_finished:
-            self._state.put(eof_key, {"stage": EOF_COMPLETED_STAGE})
-            self._pending_eof.pop(req_id, None)
+        self.coordinator.on_eof(req_id, expected_messages)
 
     def _send_unique_words(self, batch_id: int, req_id: int, words_by_shard: dict):
         sent = 0
@@ -391,6 +406,14 @@ class WordReader:
                 )
             else:
                 raise ValueError(f"Unknown key; received: {key}")
+
+            fault_tolerance.crash(at="AFTER_EOF_COMPLETED")
+            self._state.put(eof_key, {"stage": EOF_COMPLETED_STAGE})
+            fault_tolerance.crash(at="BEFORE_EOF_COMPLETED")
+
+            self._pending_eof.pop(req_id, None)
+            with self._trackers_lock:
+                self._trackers.pop(req_id, None)
             
     def process_message(self, message, ack, nack):
         try:
