@@ -43,10 +43,15 @@ class AtomicStore:
             self._write()
 
     def _write(self):
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(self.path) or ".")
+        directory = os.path.dirname(self.path) or "."
+        os.makedirs(directory, exist_ok=True)
+
+        fd, tmp = tempfile.mkstemp(dir=directory)
+
         with os.fdopen(fd, "w") as f:
             json.dump(self._data, f)
             f.flush()
             os.fsync(f.fileno())
+
         os.replace(tmp, self.path)
 
