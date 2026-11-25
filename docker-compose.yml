@@ -63,6 +63,7 @@ services:
       GATEWAY_PREFIX: gateway
       FILTER_INSTANCES: '3'
       FILTER_QUEUE: filter_queue
+      WORD_READER_INSTANCES: '4'
       WORD_READER_QUEUE: word_reader_queue
     ports:
     - 5000:5000
@@ -202,6 +203,7 @@ services:
       WORD_READER_QUEUE: word_reader_queue
       SUM_COUNT_INSTANCES: '4'
       SUM_COUNT_QUEUE: sum_count_queue
+      SUM_AMOUNT_INSTANCES: '3'
       SUM_AMOUNT_QUEUE: sum_amount_queue
       JOIN_AVERAGE_INSTANCES: '3'
       JOIN_AVERAGE_QUEUE: join_average_queue
@@ -224,6 +226,7 @@ services:
       WORD_READER_QUEUE: word_reader_queue
       SUM_COUNT_INSTANCES: '4'
       SUM_COUNT_QUEUE: sum_count_queue
+      SUM_AMOUNT_INSTANCES: '3'
       SUM_AMOUNT_QUEUE: sum_amount_queue
       JOIN_AVERAGE_INSTANCES: '3'
       JOIN_AVERAGE_QUEUE: join_average_queue
@@ -246,6 +249,7 @@ services:
       WORD_READER_QUEUE: word_reader_queue
       SUM_COUNT_INSTANCES: '4'
       SUM_COUNT_QUEUE: sum_count_queue
+      SUM_AMOUNT_INSTANCES: '3'
       SUM_AMOUNT_QUEUE: sum_amount_queue
       JOIN_AVERAGE_INSTANCES: '3'
       JOIN_AVERAGE_QUEUE: join_average_queue
@@ -268,6 +272,7 @@ services:
       WORD_READER_QUEUE: word_reader_queue
       SUM_COUNT_INSTANCES: '4'
       SUM_COUNT_QUEUE: sum_count_queue
+      SUM_AMOUNT_INSTANCES: '3'
       SUM_AMOUNT_QUEUE: sum_amount_queue
       JOIN_AVERAGE_INSTANCES: '3'
       JOIN_AVERAGE_QUEUE: join_average_queue
@@ -292,7 +297,7 @@ services:
       SUM_COUNT_INSTANCES: '4'
       SUM_COUNT_PREFIX: sum_count
       SUM_COUNT_QUEUE: sum_count_queue
-      JOIN_TOP_INSTANCES: '1'
+      JOIN_TOP_INSTANCES: '3'
       JOIN_TOP_QUEUE: join_top_queue
     depends_on:
       rabbitmq:
@@ -315,7 +320,7 @@ services:
       SUM_COUNT_INSTANCES: '4'
       SUM_COUNT_PREFIX: sum_count
       SUM_COUNT_QUEUE: sum_count_queue
-      JOIN_TOP_INSTANCES: '1'
+      JOIN_TOP_INSTANCES: '3'
       JOIN_TOP_QUEUE: join_top_queue
     depends_on:
       rabbitmq:
@@ -361,7 +366,7 @@ services:
       SUM_COUNT_INSTANCES: '4'
       SUM_COUNT_PREFIX: sum_count
       SUM_COUNT_QUEUE: sum_count_queue
-      JOIN_TOP_INSTANCES: '1'
+      JOIN_TOP_INSTANCES: '3'
       JOIN_TOP_QUEUE: join_top_queue
     depends_on:
       rabbitmq:
