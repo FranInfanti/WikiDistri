@@ -1,15 +1,17 @@
-import itertools
 import os
 import time
-import signal
+import zlib
 import base64
+import signal
 import logging
 import requests
+import threading
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 from urllib.parse import unquote, urlsplit
 from email.utils import parsedate_to_datetime
-from common import middleware, message_protocol, rabbitmq
+from common import entity, fault_tolerance, message_protocol, middleware, rabbitmq, storage
 
 ID = int(os.environ["ID"])
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
@@ -18,11 +20,26 @@ IMAGE_DOWNLOADER_INSTANCES = int(os.environ.get("IMAGE_DOWNLOADER_INSTANCES", 1)
 IMAGE_DOWNLOADER_PREFIX = os.environ.get("IMAGE_DOWNLOADER_PREFIX", "image_downloader")
 IMAGE_DOWNLOADER_QUEUE = os.environ.get("IMAGE_DOWNLOADER_QUEUE", "image_downloader_queue")
 
+# Single store for per-message idempotency and crash recovery. Keys:
+#   "data:{req_id}:{batch_id}" -> DATA batches
+#       PENDING   : {"stage": PENDING,   "payload": [...]}
+#       COMPLETED : {"stage": COMPLETED, "recv_delta": N}
+#   "eof:{req_id}:{batch_id}"  -> EOF messages
+#       EOF_PENDING   : {"stage": EOF_PENDING,   "expected": N, "batch_id": ...}
+#       EOF_COMPLETED : {"stage": EOF_COMPLETED}
+IMAGE_DOWNLOADER_STATE_PATH = os.environ.get("IMAGE_DOWNLOADER_STATE_PATH", "tmp/state.json")
+
+PENDING_STAGE = "PENDING"
+COMPLETED_STAGE = "COMPLETED"
+EOF_PENDING_STAGE = "EOF_PENDING"
+EOF_COMPLETED_STAGE = "EOF_COMPLETED"
+
 HTTP_RETRIES = 3
 THUMBNAIL_WIDTH = 1024
 WIKIMEDIA_API_URL = "https://commons.wikimedia.org/w/api.php"
 
-def _retry_after(response, fallback: float) -> float:
+
+def _retry_after(response, fallback: float):
     value = response.headers.get("Retry-After")
     if not value:
         return fallback
@@ -51,7 +68,7 @@ def _get(session: requests.Session, url: str, timeout: float, params: dict | Non
         logging.warning("Wikimedia returned HTTP 429; retrying in %.1f seconds", delay)
         time.sleep(delay)
 
-def _thumbnail_url(session: requests.Session, url: str, timeout: float) -> str:
+def _thumbnail_url(session: requests.Session, url: str, timeout: float):
     filename = unquote(urlsplit(url).path.rsplit("/", 1)[-1])
     if not filename:
         raise ValueError(f"Image URL has no filename: {url}")
@@ -87,31 +104,120 @@ def _download(session: requests.Session, url: str, timeout: float):
 
     return thumbnail_url, image, image_type
 
+
 class ImageDownloader:
     _TIMEOUT = 5.0
     _GATEWAY_QUEUE = f"{GATEWAY_PREFIX}_2"
 
     def __init__(self):
         signal.signal(signalnum=signal.SIGTERM, handler=self._sigterm_handler)
-        
+
         self.is_running = True
-        self.message_counter = itertools.count(1)
         self.session = requests.Session()
-        self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
+
+        self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
-            queue_name=f"{IMAGE_DOWNLOADER_QUEUE}_{ID}"
+            queues=[self._GATEWAY_QUEUE],
         )
+
+        self._trackers: dict[int, entity.MessageTracker] = {}
+        self._trackers_lock = threading.RLock()
+
+        self._state = storage.AtomicStore(IMAGE_DOWNLOADER_STATE_PATH)
+        self._pending_eof: dict[int, str] = {}
+
         self.coordinator = rabbitmq.RabbitCoordinator(
             id=ID,
             host=MOM_HOST,
             prefix=IMAGE_DOWNLOADER_PREFIX,
             instances=IMAGE_DOWNLOADER_INSTANCES,
-            on_all_recv=self._on_recv_all
+            on_all_recv=self._on_recv_all,
+            get_tracker=self._get_tracker,
+            state_path="tmp/eof/state.json",
         )
-        self.publisher = rabbitmq.RabbitPublisher(
+        self.coordinator.start()
+
+        self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST,
-            queues=[self._GATEWAY_QUEUE],
+            queue_name=f"{IMAGE_DOWNLOADER_QUEUE}_{ID}",
         )
+
+        self.__post_init__()
+
+    def __post_init__(self):
+        """Rebuild in-memory trackers and replay incomplete DATA/EOF work from disk."""
+        for msg_key in self._state.pending(COMPLETED_STAGE):
+            try:
+                _, req_id_str, _ = msg_key.split(":", 2)
+                req_id = int(req_id_str)
+            except ValueError:
+                logging.warning("Skipping malformed COMPLETED key: %s", msg_key)
+                continue
+
+            rec = self._state.get(msg_key)
+            tracker = self._get_tracker(req_id)
+            tracker.record_recv(rec.get("recv_delta", 0))
+
+        for msg_key in self._state.pending(PENDING_STAGE):
+            try:
+                _, req_id_str, batch_id_str = msg_key.split(":", 2)
+                req_id = int(req_id_str)
+                batch_id = int(batch_id_str)
+            except ValueError:
+                logging.warning("Skipping malformed PENDING key: %s", msg_key)
+                continue
+
+            rec = self._state.get(msg_key)
+            payload = rec.get("payload")
+            if payload is None:
+                logging.error(
+                    "Cannot replay batch req_id=%s batch_id=%s — payload missing",
+                    req_id,
+                    batch_id,
+                )
+                continue
+
+            logging.info("Replaying PENDING batch req_id=%s batch_id=%s", req_id, batch_id)
+            recv = self._download_image(batch_id, req_id, None, payload)
+
+            self._state.put(msg_key, {
+                "stage": COMPLETED_STAGE,
+                "recv_delta": recv,
+            })
+
+            with self._trackers_lock:
+                tracker = self._get_tracker(req_id)
+                tracker.record_recv(recv)
+
+        for eof_key in self._state.pending(EOF_PENDING_STAGE):
+            try:
+                _, req_id_str, _ = eof_key.split(":", 2)
+                req_id = int(req_id_str)
+            except ValueError:
+                logging.warning("Skipping malformed EOF_PENDING key: %s", eof_key)
+                continue
+
+            rec = self._state.get(eof_key)
+            expected = rec.get("expected", 0)
+
+            logging.info("Replaying EOF_PENDING req_id=%s with expected_messages=%s", req_id, expected)
+            self._pending_eof[req_id] = eof_key
+            already_finished = self.coordinator.on_eof(req_id=req_id, expected_messages=expected)
+            if already_finished:
+                self._state.put(eof_key, {"stage": EOF_COMPLETED_STAGE})
+                self._pending_eof.pop(req_id, None)
+
+
+    def _new_tracker(self):
+        return entity.message_tracker.MessageTracker()
+
+    def _get_tracker(self, req_id: int):
+        with self._trackers_lock:
+            tracker = self._trackers.get(req_id)
+            if tracker is None:
+                tracker = self._trackers[req_id] = self._new_tracker()
+            return tracker
+
 
     def _sigterm_handler(self, _signum, _frame):
         logging.info("SIGTERM signal received, proceed to shutdown the service...")
@@ -144,13 +250,17 @@ class ImageDownloader:
         else:
             logging.info("All resources have been released; goodbye")
 
-    def _download_image(self, req_id: int, _: int, messages: list):
+
+    def _download_image(self, batch_id: int, req_id: int, _: int | None, messages: list) -> int:
         logging.debug(f"Received an OPCODE_DATA message for req_id={req_id}")
-        for message in messages:
+        recv = 0
+
+        for idx, message in enumerate(messages):
             name, url, image = message
             image_url = url
             image_bytes = None
             image_type = None
+            recv += 1
 
             if image:
                 try:
@@ -158,7 +268,7 @@ class ImageDownloader:
                     image_url, image_bytes, image_type = _download(
                         session=self.session,
                         url=image,
-                        timeout=self._TIMEOUT * 2
+                        timeout=self._TIMEOUT * 2,
                     )
                 except requests.HTTPError as e:
                     logging.warning(
@@ -171,52 +281,119 @@ class ImageDownloader:
 
             logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
 
-            message_id = next(self.message_counter)
+            message_id = zlib.crc32(f"{IMAGE_DOWNLOADER_PREFIX}_{ID}_{batch_id}_{idx}".encode())
             self.publisher.publish_queue(
-                queue=f"{GATEWAY_PREFIX}_2",
+                queue=self._GATEWAY_QUEUE,
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
                     message_id=message_id,
                     req_id=req_id,
                     batches=1,
-                    message=[[name, url, image_url, image_type, image_bytes]]
-                )
+                    message=[[name, url, image_url, image_type, image_bytes]],
+                ),
             )
 
-            self.coordinator.record_recv(req_id=req_id)
+        return recv
 
-    def _on_recv_all(self, req_id: int, _: list):
+    def _on_recv_all(self, req_id: int, _):
+        eof_key = self._pending_eof[req_id]
+        batch_id = self._state.get(eof_key)["batch_id"]
+
         logging.debug(f"Sending OPCODE_EOF message to {self._GATEWAY_QUEUE} for req_id={req_id}")
 
+        message_id = zlib.crc32(f"{IMAGE_DOWNLOADER_PREFIX}_{ID}_{batch_id}_{GATEWAY_PREFIX}".encode())
         self.publisher.publish_queue(
             queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_EOF,
-                req_id=req_id
-            )
+                message_id=message_id,
+                req_id=req_id,
+            ),
         )
 
-    def _process_message(self, message, ack, nack):
-        try:
-            opcode, _, *args = message_protocol.internal.deserialize(message)
+        self._state.put(eof_key, {"stage": EOF_COMPLETED_STAGE})
+        self._pending_eof.pop(req_id, None)
 
+        with self._trackers_lock:
+            self._trackers.pop(req_id, None)
+
+
+    def _handle_data(self, ack: Callable, *args):
+        batch_id, req_id, _, messages = args
+        msg_key = f"data:{req_id}:{batch_id}"
+
+        stage = self._state.get(msg_key).get("stage")
+        if stage is not None:
+            logging.warning(f"Duplicate redelivery from broker for req_id={req_id}; acknowledge and discard")
+            ack()
+            return
+
+        fault_tolerance.crash(at="BEFORE_SAVE_PENDING")
+        self._state.put(msg_key, {"stage": PENDING_STAGE, "payload": messages})
+        fault_tolerance.crash(at="AFTER_SAVE_PENDING")
+
+        ack()
+        fault_tolerance.crash(at="AFTER_DATA_ACK")
+
+        recv = self._download_image(*args)
+        fault_tolerance.crash(at="AFTER_DATA_DOWNLOAD")
+
+        self._state.put(msg_key, {
+            "stage": COMPLETED_STAGE,
+            "recv_delta": recv,
+        })
+        fault_tolerance.crash(at="AFTER_DATA_COMPLETED")
+
+        with self._trackers_lock:
+            tracker = self._get_tracker(req_id)
+            tracker.record_recv(recv)
+
+    def _handle_eof(self, ack: Callable, *args):
+        batch_id, req_id, _, expected_messages = args
+        eof_key = f"eof:{req_id}:{batch_id}"
+
+        stage = self._state.get(eof_key).get("stage")
+        if stage is not None:
+            logging.warning(f"Duplicate redelivery from broker for req_id={req_id}; acknowledge and discard")
+            ack()
+            return
+
+        fault_tolerance.crash(at="BEFORE_SAVE_EOF")
+        self._state.put(eof_key, {
+            "stage": EOF_PENDING_STAGE,
+            "expected": expected_messages,
+            "batch_id": batch_id,
+        })
+        fault_tolerance.crash(at="AFTER_SAVE_EOF")
+
+        self._pending_eof[req_id] = eof_key
+
+        ack()
+        fault_tolerance.crash(at="AFTER_EOF_ACK")
+
+        already_finished = self.coordinator.on_eof(req_id=req_id, expected_messages=expected_messages)
+        if already_finished:
+            self._state.put(eof_key, {"stage": EOF_COMPLETED_STAGE})
+            self._pending_eof.pop(req_id, None)
+        fault_tolerance.crash(at="AFTER_STARTING_EOF")
+
+    def _process_message(self, message, ack, nack):
+        opcode, *args = message_protocol.internal.deserialize(message)
+        try:
             if opcode == message_protocol.OPCODE_DATA:
-                self._download_image(*args)
+                self._handle_data(ack, *args)
             elif opcode == message_protocol.OPCODE_EOF:
-                req_id, _, expected_messages = args
-                logging.debug(f"Received an OPCODE_EOF message for req_id={req_id}")
-                self.coordinator.on_eof(req_id=req_id, expected_messages=expected_messages)
+                self._handle_eof(ack, *args)
             else:
                 logging.warning(f"Unexpected OPCODE received: {opcode}")
-            ack()
-        except:
+                ack()
+        except Exception:
             logging.exception("An error occured while processing a message")
             nack()
-        
+
     def start(self):
         try:
             logging.info("Waiting to receive messages...")
-            self.coordinator.start()
             self.input_queue.start_consuming(self._process_message)
         except Exception:
             if self.is_running:
@@ -226,10 +403,11 @@ class ImageDownloader:
         finally:
             self._close()
 
+
 def main():
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s [%(levelname)s] %(threadName)s: %(message)s"
+        format="%(asctime)s [%(levelname)s] %(threadName)s: %(message)s",
     )
     logging.getLogger("pika").propagate = False
     try:
