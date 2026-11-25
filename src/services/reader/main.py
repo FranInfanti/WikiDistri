@@ -38,6 +38,8 @@ COMPLETED_STAGE = "COMPLETED"
 EOF_PENDING_STAGE = "EOF_PENDING"
 EOF_COMPLETED_STAGE = "EOF_COMPLETED"
 
+GATEWAY = "gateway"
+
 def tokenize(abstract: str, language: str | None) -> list[str]:
     words = _WORD_RE.findall(abstract.lower())
     return [ w for w in words if not _NUMBER_RE.fullmatch(w) and w not in STOPWORDS ]
@@ -86,7 +88,7 @@ class WordReader:
         self._trackers: dict[int, entity.MessageTracker] = {}
         self._trackers_lock = threading.RLock()
 
-        self._state = storage.AtomicStore(READER_STATE_PATH)
+        self._store = storage.AtomicStoreReader(READER_STATE_PATH)
 
         self._pending_eof: dict[int, str] = {}
 
@@ -125,72 +127,22 @@ class WordReader:
         self.__post_init__()
 
     def __post_init__(self):
-        for msg_key in self._state.pending(COMPLETED_STAGE):
-            try:
-                _, req_id_str, _ = msg_key.split(":")
-                req_id = int(req_id_str)
-            except ValueError:
-                logging.warning("Skipping malformed COMPLETED key: %s", msg_key)
-                continue
-
-            rec = self._state.get(msg_key)
+        for req_id, snapshot in self._store.snapshots().items():
             tracker = self._get_tracker(req_id)
-            tracker.record_recv(rec.get("recv_delta", 0))
-            tracker.record_sent(SUM_COUNT_QUEUE, rec.get("sent_delta_sum_count", 0))
-            tracker.record_sent(SUM_AMOUNT_QUEUE, rec.get("sent_delta_sum_amount", 0))
-            tracker.record_sent(JOIN_AVERAGE_QUEUE, rec.get("sent_delta_join", 0))
+            tracker.record_recv(snapshot.get("recv", 0))
+            tracker.record_sent(SUM_COUNT_QUEUE, snapshot.get("sent_count", 0))
+            tracker.record_sent(SUM_AMOUNT_QUEUE, snapshot.get("sent_amount", 0))
+            tracker.record_sent(JOIN_AVERAGE_QUEUE, snapshot.get("sent_join", 0))
 
-        # Replay any DATA batch that was ACKed but not yet COMPLETED.
-        for msg_key in self._state.pending(PENDING_STAGE):
-            try:
-                _, req_id_str, batch_id_str = msg_key.split(":")
-                req_id = int(req_id_str)
-                batch_id = int(batch_id_str)
-            except ValueError:
-                logging.warning("Skipping malformed PENDING key: %s", msg_key)
-                continue
-
-            rec = self._state.get(msg_key)
-            batches = rec.get("batches")
-            payload = rec.get("payload")
-            if payload is None:
-                logging.error(
-                    "Cannot replay batch req_id=%s batch_id=%s — payload missing",
-                    req_id, batch_id,
-                )
-                continue
-
+        for req_id, _, batch_id, batches, payload in self._store.pending():
             logging.info("Replaying PENDING batch req_id=%s batch_id=%s", req_id, batch_id)
             sent_count, sent_amount, sent_join = self._handle_articles(batch_id, req_id, payload)
-
-            tracker = self._get_tracker(req_id)
-            tracker.record_recv(batches)
-            tracker.record_sent(SUM_COUNT_QUEUE, sent_count)
-            tracker.record_sent(SUM_AMOUNT_QUEUE, sent_amount)
-            tracker.record_sent(JOIN_AVERAGE_QUEUE, sent_join)
-
-            self._state.put(msg_key, {
-                "stage": COMPLETED_STAGE,
-                "recv_delta": batches,
-                "sent_delta_sum_count": sent_count,
-                "sent_delta_sum_amount": sent_amount,
-                "sent_delta_join": sent_join,
-            })
+            self._complete(req_id, batch_id, batches, sent_count, sent_amount, sent_join)
 
         # Re-trigger any EOF whose coordinator call did not complete before crash.
-        for eof_key in self._state.pending(EOF_PENDING_STAGE):
-            try:
-                _, req_id_str, _ = eof_key.split(":")
-                req_id = int(req_id_str)
-            except ValueError:
-                logging.warning("Skipping malformed EOF_PENDING key: %s", eof_key)
-                continue
-
-            rec = self._state.get(eof_key)
-
+        for req_id, _, expected in self._store.pending_eofs():
             logging.info("Replaying EOF_PENDING req_id=%s", req_id)
-            self._pending_eof[req_id] = eof_key
-            self.coordinator.on_eof(req_id=req_id, expected_messages=rec.get("expected", 0))
+            self.coordinator.on_eof(req_id=req_id, expected_messages=expected)
 
     def _new_tracker(self):
         tracker = entity.message_tracker.MessageTracker()
@@ -205,6 +157,23 @@ class WordReader:
             if tracker is None:
                 tracker = self._trackers[req_id] = self._new_tracker()
             return tracker
+
+    def _complete(self, req_id, batch_id, batches, sent_count, sent_amount, sent_join):
+        old = self._store.get(req_id).get("data", {})
+
+        with self._trackers_lock:
+            tracker = self._get_tracker(req_id)
+            tracker.record_recv(batches)
+            tracker.record_sent(SUM_COUNT_QUEUE, sent_count)
+            tracker.record_sent(SUM_AMOUNT_QUEUE, sent_amount)
+            tracker.record_sent(JOIN_AVERAGE_QUEUE, sent_join)
+
+        self._store.apply(req_id, GATEWAY, batch_id, {
+            "recv": old.get("recv", 0) + batches,
+            "sent_count": old.get("sent_count", 0) + sent_count,
+            "sent_amount": old.get("sent_amount", 0) + sent_amount,
+            "sent_join": old.get("sent_join", 0) + sent_join,
+        })
 
     def _sigterm_handler(self, _signum, _frame):
         logging.info("Shutdown signal received, stopping consumer...")
@@ -261,14 +230,12 @@ class WordReader:
         batch_id, req_id, batches, messages = args
         msg_key = f"data:{req_id}:{batch_id}"
 
-        stage = self._state.get(msg_key).get("stage")
-        if stage is not None:
+        fault_tolerance.crash(at="BEFORE_SAVE_PENDING")
+        if not self._store.begin(req_id, GATEWAY, batch_id, batches, messages):
             logging.warning(f"Duplicate redelivery from broker for req_id={req_id}; acknowledge and discard")
             ack()
             return
 
-        fault_tolerance.crash(at="BEFORE_SAVE_PENDING")
-        self._state.put(msg_key, {"stage": PENDING_STAGE, "batches": batches, "payload": messages})
         fault_tolerance.crash(at="AFTER_SAVE_PENDING")
 
         ack()
@@ -277,41 +244,18 @@ class WordReader:
         sent_count, sent_amount, sent_join = self._handle_articles(batch_id, req_id, messages)
         fault_tolerance.crash(at="AFTER_DATA_READER")
 
-        with self._trackers_lock:
-            tracker = self._get_tracker(req_id)
-            tracker.record_recv(batches)
-            tracker.record_sent(SUM_COUNT_QUEUE, sent_count)
-            tracker.record_sent(SUM_AMOUNT_QUEUE, sent_amount)
-            tracker.record_sent(JOIN_AVERAGE_QUEUE, sent_join)
-            
-        self._state.put(msg_key, {
-            "stage": COMPLETED_STAGE,
-            "recv_delta": batches,
-            "sent_delta_sum_count": sent_count,
-            "sent_delta_sum_amount": sent_amount,
-            "sent_delta_join": sent_join,
-        })
+        self._complete(req_id, batch_id, batches, sent_count, sent_amount, sent_join)
         fault_tolerance.crash(at="AFTER_DATA_COMPLETED")
 
     def _handle_eof(self, ack: Callable, *args):
         batch_id, req_id, _, expected_messages = args
-        eof_key = f"eof:{req_id}:{batch_id}"
 
-        stage = self._state.get(eof_key).get("stage")
-        if stage is not None: 
+        fault_tolerance.crash(at="BEFORE_SAVE_EOF")
+        if not self._store.begin_eof(req_id, batch_id, expected_messages):
             logging.warning(f"Duplicate redelivery from broker for req_id={req_id}; acknowledge and discard")
             ack()
             return
-
-        fault_tolerance.crash(at="BEFORE_SAVE_EOF")
-        self._state.put(eof_key, {
-            "stage": EOF_PENDING_STAGE,
-            "expected": expected_messages,
-            "batch_id": batch_id,
-        })
         fault_tolerance.crash(at="AFTER_SAVE_EOF")
-
-        self._pending_eof[req_id] = eof_key
 
         ack()
         fault_tolerance.crash(at="AFTER_EOF_ACK")
@@ -323,7 +267,7 @@ class WordReader:
         for shard, shard_words in words_by_shard.items():
             message = [[word, en, fr] for word, (en, fr) in shard_words.items()]
             logging.debug(f"Send OPCODE_DATA message to {self.sum_count_queue_names[shard]} for req_id={req_id}")
-            message_id = zlib.crc32(f"{WORD_READER_PREFIX}_{ID}_{batch_id}_count_{shard}".encode())
+            message_id = f"{WORD_READER_PREFIX}_{ID}_{batch_id}_count_{shard}"
             self.count_publisher.publish_queue(
                 queue=self.sum_count_queue_names[shard],
                 message=message_protocol.internal.serialize(
@@ -341,7 +285,7 @@ class WordReader:
         sent_amount = sent_join = 0
         for shard, batch in join_batches.items():
             logging.debug(f"Send OPCODE_DATA message to {self.join_average_queue_names[shard]} for req_id={req_id}")
-            message_id = zlib.crc32(f"{WORD_READER_PREFIX}_{ID}_{batch_id}_join_{shard}".encode())
+            message_id = f"{WORD_READER_PREFIX}_{ID}_{batch_id}_join_{shard}"
             self.join_publisher.publish_queue(
                 queue=self.join_average_queue_names[shard],
                 message=message_protocol.internal.serialize(
@@ -356,9 +300,9 @@ class WordReader:
     
         if amount_batch:
             logging.debug(f"Send OPCODE_DATA message to {SUM_AMOUNT_QUEUE} for req_id={req_id}")
-            message_id = zlib.crc32(f"{WORD_READER_PREFIX}_{ID}_{batch_id}_amount".encode())
+            message_id = f"{WORD_READER_PREFIX}_{ID}_{batch_id}_amount"
             self.amount_publisher.publish_queue(
-                queue=f"{SUM_AMOUNT_QUEUE}_{message_id % SUM_AMOUNT_INSTANCES}",
+                queue=f"{SUM_AMOUNT_QUEUE}_{zlib.crc32(message_id.encode()) % SUM_AMOUNT_INSTANCES}",
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
                     message_id=message_id,
@@ -371,13 +315,12 @@ class WordReader:
     def _on_recv_all(self, req_id: int, sent_messages: list):
         logging.info(f"All articles have been received for req_id={req_id}; forwarding EOF...")
 
-        eof_key  = self._pending_eof[req_id]
-        batch_id = self._state.get(eof_key)["batch_id"]
+        batch_id = self._store.get(req_id)["eof"]["message_id"]
 
         for key, sent in sent_messages:
             if key == SUM_COUNT_QUEUE:
                 logging.debug(f"Send OPCODE_EOF message to {self.sum_count_queue_names[0]} for req_id={req_id}")
-                message_id = zlib.crc32(f"{WORD_READER_PREFIX}_{ID}_{batch_id}_{key}".encode())
+                message_id = f"{WORD_READER_PREFIX}_{ID}_{batch_id}_{key}"
                 self.count_publisher.publish_queue(
                     queue=self.sum_count_queue_names[0],
                     message=message_protocol.internal.serialize(
@@ -390,7 +333,7 @@ class WordReader:
                 )
             elif key == JOIN_AVERAGE_QUEUE:
                 logging.debug(f"Send OPCODE_EOF message to {self.join_average_queue_names[0]} for req_id={req_id}")
-                message_id = zlib.crc32(f"{WORD_READER_PREFIX}_{ID}_{batch_id}_{key}".encode())
+                message_id = f"{WORD_READER_PREFIX}_{ID}_{batch_id}_{key}"
                 self.join_publisher.publish_queue(
                     queue=self.join_average_queue_names[0],
                     message=message_protocol.internal.serialize(
@@ -403,9 +346,9 @@ class WordReader:
                 )
             elif key == SUM_AMOUNT_QUEUE:
                 logging.debug(f"Send OPCODE_EOF message to {SUM_AMOUNT_QUEUE} for req_id={req_id}")
-                message_id = zlib.crc32(f"{WORD_READER_PREFIX}_{ID}_{batch_id}_{key}".encode())
+                message_id = f"{WORD_READER_PREFIX}_{ID}_{batch_id}_{key}"
                 self.amount_publisher.publish_queue(
-                    queue=f"{SUM_AMOUNT_QUEUE}_{message_id % SUM_AMOUNT_INSTANCES}",
+                    queue=f"{SUM_AMOUNT_QUEUE}_{zlib.crc32(message_id.encode()) % SUM_AMOUNT_INSTANCES}",
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
                         message_id=message_id,
@@ -417,13 +360,12 @@ class WordReader:
             else:
                 raise ValueError(f"Unknown key; received: {key}")
 
-            fault_tolerance.crash(at="AFTER_EOF_COMPLETED")
-            self._state.put(eof_key, {"stage": EOF_COMPLETED_STAGE})
-            fault_tolerance.crash(at="BEFORE_EOF_COMPLETED")
+        fault_tolerance.crash(at="BEFORE_EOF_COMPLETED")
+        self._store.delete(req_id)  
+        fault_tolerance.crash(at="AFTER_EOF_COMPLETED")
 
-            self._pending_eof.pop(req_id, None)
-            with self._trackers_lock:
-                self._trackers.pop(req_id, None)
+        with self._trackers_lock:
+            self._trackers.pop(req_id, None)
             
     def process_message(self, message, ack, nack):
         try:
