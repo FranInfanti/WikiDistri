@@ -228,7 +228,6 @@ class WordReader:
 
     def _handle_data(self, ack: Callable, *args):
         batch_id, req_id, batches, messages = args
-        msg_key = f"data:{req_id}:{batch_id}"
 
         fault_tolerance.crash(at="BEFORE_SAVE_PENDING")
         if not self._store.begin(req_id, GATEWAY, batch_id, batches, messages):
@@ -242,7 +241,7 @@ class WordReader:
         fault_tolerance.crash(at="AFTER_DATA_ACK")
 
         sent_count, sent_amount, sent_join = self._handle_articles(batch_id, req_id, messages)
-        fault_tolerance.crash(at="AFTER_DATA_READER")
+        fault_tolerance.crash(at="AFTER_DATA_PROCESSED")
 
         self._complete(req_id, batch_id, batches, sent_count, sent_amount, sent_join)
         fault_tolerance.crash(at="AFTER_DATA_COMPLETED")
@@ -267,7 +266,7 @@ class WordReader:
         for shard, shard_words in words_by_shard.items():
             message = [[word, en, fr] for word, (en, fr) in shard_words.items()]
             logging.debug(f"Send OPCODE_DATA message to {self.sum_count_queue_names[shard]} for req_id={req_id}")
-            message_id = f"{WORD_READER_PREFIX}_{ID}_{batch_id}_count_{shard}"
+            message_id = f"{WORD_READER_PREFIX}_{ID}:_{batch_id}_count_{shard}"
             self.count_publisher.publish_queue(
                 queue=self.sum_count_queue_names[shard],
                 message=message_protocol.internal.serialize(
@@ -285,7 +284,7 @@ class WordReader:
         sent_amount = sent_join = 0
         for shard, batch in join_batches.items():
             logging.debug(f"Send OPCODE_DATA message to {self.join_average_queue_names[shard]} for req_id={req_id}")
-            message_id = f"{WORD_READER_PREFIX}_{ID}_{batch_id}_join_{shard}"
+            message_id = f"{WORD_READER_PREFIX}_{ID}:_{batch_id}_join_{shard}"
             self.join_publisher.publish_queue(
                 queue=self.join_average_queue_names[shard],
                 message=message_protocol.internal.serialize(
@@ -300,7 +299,7 @@ class WordReader:
     
         if amount_batch:
             logging.debug(f"Send OPCODE_DATA message to {SUM_AMOUNT_QUEUE} for req_id={req_id}")
-            message_id = f"{WORD_READER_PREFIX}_{ID}_{batch_id}_amount"
+            message_id = f"{WORD_READER_PREFIX}_{ID}:_{batch_id}_amount"
             self.amount_publisher.publish_queue(
                 queue=f"{SUM_AMOUNT_QUEUE}_{zlib.crc32(message_id.encode()) % SUM_AMOUNT_INSTANCES}",
                 message=message_protocol.internal.serialize(
