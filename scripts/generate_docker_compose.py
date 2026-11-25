@@ -172,7 +172,7 @@ def build_compose(
                 "GATEWAY_PREFIX": "gateway",
                 "IMAGE_DOWNLOADER_INSTANCES": str(image_downloaders),
                 "IMAGE_DOWNLOADER_PREFIX": "image_downloader",
-                "IMAGE_DOWNLOADER_QUEUE": "image_downloader_queue",
+                "IMAGE_DOWNLOADER_QUEUE_PREFIX": "image_downloader_queue",
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
@@ -283,7 +283,7 @@ def build_compose(
                 "SUM_AMOUNT_PREFIX": "sum_amount",
                 "SUM_AMOUNT_QUEUE": "sum_amount_queue",
                 "AVERAGE_INSTANCES": str(averages),
-                "AVERAGE_QUEUE": "average_queue",
+                "AVERAGE_QUEUE_PREFIX": "average_queue",
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
@@ -305,7 +305,7 @@ def build_compose(
                 "LOG_LEVEL": log_level,
                 "ID": str(id),
                 "MOM_HOST": "rabbitmq",
-                "AVERAGE_QUEUE": "average_queue",
+                "AVERAGE_QUEUE_PREFIX": "average_queue",
                 "SUM_AMOUNT_INSTANCES": str(sum_amounts),
                 "JOIN_AVERAGE_INSTANCES": str(join_averages),
                 "JOIN_AVERAGE_QUEUE": "join_average_queue",
