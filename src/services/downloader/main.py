@@ -2,6 +2,7 @@ import os
 import json
 import time
 import zlib
+import cache
 import base64
 import signal
 import logging
@@ -20,7 +21,10 @@ MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
 GATEWAY_PREFIX = os.environ.get("GATEWAY_PREFIX", "gateway")
 IMAGE_DOWNLOADER_INSTANCES = int(os.environ.get("IMAGE_DOWNLOADER_INSTANCES", 1))
 IMAGE_DOWNLOADER_PREFIX = os.environ.get("IMAGE_DOWNLOADER_PREFIX", "image_downloader")
-IMAGE_DOWNLOADER_QUEUE = os.environ.get("IMAGE_DOWNLOADER_QUEUE", "image_downloader_queue")
+IMAGE_DOWNLOADER_QUEUE_PREFIX = os.environ.get("IMAGE_DOWNLOADER_QUEUE_PREFIX", "image_downloader_queue")
+
+IMAGE_DOWNLOADER_CACHE_DIR = os.environ.get("IMAGE_DOWNLOADER_CACHE_DIR", "tmp/cache")
+CACHE_TTL_SECONDS = int(os.environ.get("IMAGE_DOWNLOADER_CACHE_TTL", str(24 * 3600)))
 
 # Single store for per-message idempotency and crash recovery. Keys:
 #   "data:{req_id}:{batch_id}" -> DATA batches
@@ -36,29 +40,30 @@ COMPLETED_STAGE = "COMPLETED"
 EOF_PENDING_STAGE = "EOF_PENDING"
 EOF_COMPLETED_STAGE = "EOF_COMPLETED"
 
+
 HTTP_RETRIES = 3
 THUMBNAIL_WIDTH = 1024
 WIKIMEDIA_API_URL = "https://commons.wikimedia.org/w/api.php"
 
+def _get(session: requests.Session, url: str, timeout: float, params: dict | None = None):
 
-def _retry_after(response, fallback: float):
-    value = response.headers.get("Retry-After")
-    if not value:
-        return fallback
-
-    try:
-        return max(0.0, float(value))
-    except ValueError:
-        try:
-            retry_at = parsedate_to_datetime(value)
-            if retry_at.tzinfo is None:
-                retry_at = retry_at.replace(tzinfo=timezone.utc)
-            return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
-        except (TypeError, ValueError, OverflowError):
+    def _retry_after(response, fallback: float):
+        value = response.headers.get("Retry-After")
+        if not value:
             return fallback
 
-def _get(session: requests.Session, url: str, timeout: float, params: dict | None = None):
-    headers = {"User-Agent": "WikiDistri/1.0 (francisco.infanti@gmail.com)"}
+        try:
+            return max(0.0, float(value))
+        except ValueError:
+            try:
+                retry_at = parsedate_to_datetime(value)
+                if retry_at.tzinfo is None:
+                    retry_at = retry_at.replace(tzinfo=timezone.utc)
+                return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                return fallback
+
+    headers = {"User-Agent": "WikiDistri/1.0 (finfanti@fi.uba.ar)"}
     for attempt in range(HTTP_RETRIES + 1):
         response = session.get(url=url, headers=headers, params=params, timeout=timeout)
         if response.status_code != 429 or attempt == HTTP_RETRIES:
@@ -70,34 +75,36 @@ def _get(session: requests.Session, url: str, timeout: float, params: dict | Non
         logging.warning("Wikimedia returned HTTP 429; retrying in %.1f seconds", delay)
         time.sleep(delay)
 
-def _thumbnail_url(session: requests.Session, url: str, timeout: float):
-    filename = unquote(urlsplit(url).path.rsplit("/", 1)[-1])
-    if not filename:
-        raise ValueError(f"Image URL has no filename: {url}")
-
-    response = _get(
-        session=session,
-        url=WIKIMEDIA_API_URL,
-        timeout=timeout,
-        params={
-            "action": "query",
-            "format": "json",
-            "formatversion": 2,
-            "prop": "imageinfo",
-            "iiprop": "url",
-            "iiurlwidth": THUMBNAIL_WIDTH,
-            "titles": f"File:{filename}",
-        },
-    )
-    pages = response.json().get("query", {}).get("pages", [])
-    for page in pages:
-        imageinfo = page.get("imageinfo", [])
-        if imageinfo and imageinfo[0].get("thumburl"):
-            return imageinfo[0]["thumburl"]
-
-    raise ValueError(f"Wikimedia did not return a thumbnail URL for {filename}")
 
 def _download(session: requests.Session, url: str, timeout: float):
+    
+    def _thumbnail_url(session: requests.Session, url: str, timeout: float):
+        filename = unquote(urlsplit(url).path.rsplit("/", 1)[-1])
+        if not filename:
+            raise ValueError(f"Image URL has no filename: {url}")
+
+        response = _get(
+            session=session,
+            url=WIKIMEDIA_API_URL,
+            timeout=timeout,
+            params={
+                "action": "query",
+                "format": "json",
+                "formatversion": 2,
+                "prop": "imageinfo",
+                "iiprop": "url",
+                "iiurlwidth": THUMBNAIL_WIDTH,
+                "titles": f"File:{filename}",
+            },
+        )
+        pages = response.json().get("query", {}).get("pages", [])
+        for page in pages:
+            imageinfo = page.get("imageinfo", [])
+            if imageinfo and imageinfo[0].get("thumburl"):
+                return imageinfo[0]["thumburl"]
+
+        raise ValueError(f"Wikimedia did not return a thumbnail URL for {filename}")
+
     thumbnail_url = _thumbnail_url(session=session, url=url, timeout=timeout)
     response = _get(session=session, url=thumbnail_url, timeout=timeout)
 
@@ -114,20 +121,21 @@ class ImageDownloader:
 
     def __init__(self):
         signal.signal(signalnum=signal.SIGTERM, handler=self._sigterm_handler)
-
-        self.is_running = True
-        self.session = requests.Session()
-
-        self.publisher = rabbitmq.RabbitPublisher(
-            host=MOM_HOST,
-            queues=[self._GATEWAY_QUEUE],
-        )
+        
+        self._is_running = True
+        self._session = requests.Session()
 
         self._trackers: dict[int, entity.MessageTracker] = {}
         self._trackers_lock = threading.RLock()
 
         self._state = storage.AtomicStore(IMAGE_DOWNLOADER_STATE_PATH)
+        self._cache = cache.ImageCache(IMAGE_DOWNLOADER_CACHE_DIR, CACHE_TTL_SECONDS)
         self._pending_eof: dict[int, str] = {}
+
+        self.publisher = rabbitmq.RabbitPublisher(
+            host=MOM_HOST,
+            queues=[self._GATEWAY_QUEUE],
+        )
 
         self.coordinator = rabbitmq.RabbitCoordinator(
             id=ID,
@@ -142,13 +150,12 @@ class ImageDownloader:
 
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST,
-            queue_name=f"{IMAGE_DOWNLOADER_QUEUE}_{ID}",
+            queue_name=f"{IMAGE_DOWNLOADER_QUEUE_PREFIX}_{ID}",
         )
 
         self.__post_init__()
 
     def __post_init__(self):
-        """Rebuild in-memory trackers and replay incomplete DATA/EOF work from disk."""
         for msg_key in self._state.pending(COMPLETED_STAGE):
             try:
                 _, req_id_str, _ = msg_key.split(":", 2)
@@ -187,10 +194,13 @@ class ImageDownloader:
                 "stage": COMPLETED_STAGE,
                 "recv_delta": recv,
             })
+            self._cache.delete_batch(payload)
 
             with self._trackers_lock:
                 tracker = self._get_tracker(req_id)
                 tracker.record_recv(recv)
+
+        self._cache.sweep()
 
         for eof_key in self._state.pending(EOF_PENDING_STAGE):
             try:
@@ -224,7 +234,7 @@ class ImageDownloader:
 
     def _sigterm_handler(self, _signum, _frame):
         logging.info("SIGTERM signal received, proceed to shutdown the service...")
-        self.is_running = False
+        self._is_running = False
         try:
             self.input_queue.stop_consuming()
         except Exception:
@@ -309,26 +319,34 @@ class ImageDownloader:
         for message in messages:
             name, url, image = message
             image_url = url
-            image_bytes = None
-            image_type = None
+            image_bytes = image_type = None
             recv += 1
 
             if image:
-                try:
-                    logging.info(f"Downloading image {image} for req_id={req_id}")
-                    image_url, image_bytes, image_type = _download(
-                        session=self.session,
-                        url=image,
-                        timeout=self._TIMEOUT * 2,
-                    )
-                except requests.HTTPError as e:
-                    logging.warning(
-                        f"HTTP Error: {e.response.status_code}; reason: {e.response.reason}"
-                    )
-                except requests.RequestException as e:
-                    logging.warning(f"Request failed for {image}: {e}")
-                except ValueError as e:
-                    logging.warning(f"Could not resolve thumbnail for {image}: {e}")
+                cached = self._cache.get(image)
+                if cached is not None:
+                    logging.info(f"Cache hit for image {image} for req_id={req_id}")
+                    image_url, image_bytes, image_type = cached
+                else:
+                    try:
+                        logging.info(f"Downloading image {image} for req_id={req_id}")
+                        image_url, image_bytes, image_type = _download(
+                            session=self._session,
+                            url=image,
+                            timeout=self._TIMEOUT * 2,
+                        )
+                        try:
+                            self._cache.put(image, (image_url, image_bytes, image_type))
+                        except OSError:
+                            logging.warning(f"Could not cache image {image}", exc_info=True)
+                    except requests.HTTPError as e:
+                        logging.warning(
+                            f"HTTP Error: {e.response.status_code}; reason: {e.response.reason}"
+                        )
+                    except requests.RequestException as e:
+                        logging.warning(f"Request failed for {image}: {e}")
+                    except ValueError as e:
+                        logging.warning(f"Could not resolve thumbnail for {image}: {e}")
 
             results.append([name, url, image_url, image_type, image_bytes])
 
@@ -385,6 +403,7 @@ class ImageDownloader:
             "recv_delta": recv,
         })
         fault_tolerance.crash(at="AFTER_DATA_COMPLETED")
+        self._cache.delete_batch(messages)
 
         with self._trackers_lock:
             tracker = self._get_tracker(req_id)
@@ -433,12 +452,13 @@ class ImageDownloader:
             logging.exception("An error occured while processing a message")
             nack()
 
+
     def start(self):
         try:
             logging.info("Waiting to receive messages...")
             self.input_queue.start_consuming(self._process_message)
         except Exception:
-            if self.is_running:
+            if self._is_running:
                 logging.critical("An unexpected error occurred while running the service", exc_info=True)
                 raise
             logging.debug("Interrupted by the SIGTERM signal")
