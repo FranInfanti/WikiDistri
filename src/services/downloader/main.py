@@ -1,4 +1,5 @@
 import os
+import json
 import time
 import zlib
 import base64
@@ -14,6 +15,7 @@ from email.utils import parsedate_to_datetime
 from common import entity, fault_tolerance, message_protocol, middleware, rabbitmq, storage
 
 ID = int(os.environ["ID"])
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "1000"))
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
 GATEWAY_PREFIX = os.environ.get("GATEWAY_PREFIX", "gateway")
 IMAGE_DOWNLOADER_INSTANCES = int(os.environ.get("IMAGE_DOWNLOADER_INSTANCES", 1))
@@ -107,6 +109,7 @@ def _download(session: requests.Session, url: str, timeout: float):
 
 class ImageDownloader:
     _TIMEOUT = 5.0
+    _ENVELOPE_OVERHEAD = 64
     _GATEWAY_QUEUE = f"{GATEWAY_PREFIX}_2"
 
     def __init__(self):
@@ -251,11 +254,59 @@ class ImageDownloader:
             logging.info("All resources have been released; goodbye")
 
 
+    def _build_batches(self, records: list) -> list[list]:
+        """Group downloaded image records into batches respecting BATCH_SIZE and RabbitMQ's max message size."""
+        max_message_size = message_protocol.MAX_RABBITMQ_MESSAGE_SIZE
+        batches = []
+        batch, batch_size = [], self._ENVELOPE_OVERHEAD
+
+        for record in records:
+            record_size = len(json.dumps(record).encode(message_protocol.ENCODING)) + 2
+
+            if batch and (len(batch) >= BATCH_SIZE or batch_size + record_size > max_message_size):
+                batches.append(batch)
+                batch, batch_size = [], self._ENVELOPE_OVERHEAD
+
+            if self._ENVELOPE_OVERHEAD + record_size > max_message_size:
+                raise ValueError(
+                    f"Serialized image record exceeds RabbitMQ's {max_message_size}-byte limit"
+                )
+
+            batch.append(record)
+            batch_size += record_size
+
+        if batch:
+            batches.append(batch)
+
+        return batches
+
+    def _flush_batches(self, batches: list[list], req_id: int, batch_id: int):
+        # For the same batch, each batch is going to have the same amount of elements
+        for idx, batch in enumerate(batches):
+            message_id = zlib.crc32(f"{IMAGE_DOWNLOADER_PREFIX}_{ID}_{batch_id}_{idx}".encode())
+            logging.debug(
+                "Sending OPCODE_DATA batch of %s messages to %s for req_id=%s",
+                len(batch),
+                self._GATEWAY_QUEUE,
+                req_id,
+            )
+            self.publisher.publish_queue(
+                queue=self._GATEWAY_QUEUE,
+                message=message_protocol.internal.serialize(
+                    opcode=message_protocol.OPCODE_DATA,
+                    message_id=message_id,
+                    req_id=req_id,
+                    batches=len(batch),
+                    message=batch,
+                ),
+            )
+
     def _download_image(self, batch_id: int, req_id: int, _: int | None, messages: list) -> int:
         logging.debug(f"Received an OPCODE_DATA message for req_id={req_id}")
         recv = 0
+        results = []
 
-        for idx, message in enumerate(messages):
+        for message in messages:
             name, url, image = message
             image_url = url
             image_bytes = None
@@ -279,19 +330,10 @@ class ImageDownloader:
                 except ValueError as e:
                     logging.warning(f"Could not resolve thumbnail for {image}: {e}")
 
-            logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
+            results.append([name, url, image_url, image_type, image_bytes])
 
-            message_id = zlib.crc32(f"{IMAGE_DOWNLOADER_PREFIX}_{ID}_{batch_id}_{idx}".encode())
-            self.publisher.publish_queue(
-                queue=self._GATEWAY_QUEUE,
-                message=message_protocol.internal.serialize(
-                    opcode=message_protocol.OPCODE_DATA,
-                    message_id=message_id,
-                    req_id=req_id,
-                    batches=1,
-                    message=[[name, url, image_url, image_type, image_bytes]],
-                ),
-            )
+        batches = self._build_batches(results)
+        self._flush_batches(batches=batches, req_id=req_id, batch_id=batch_id)
 
         return recv
 
