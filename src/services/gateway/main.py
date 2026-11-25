@@ -271,14 +271,14 @@ class Gateway:
 
             if not client_req:
                 if self.is_running:
-                    logging.debug(
+                    logging.warning(
                         f"Discarding response for inactive req_id={req_id} from job_id={job_id}",
                     )
                 ack() # client no longer exists, but we still ack the message
                 return
 
             if client_req.record_message(message_id):
-                logging.debug(
+                logging.warning(
                     f"Discarding duplicate message_id={message_id} for req_id={req_id} from job_id={job_id}"
                 )
                 ack()
