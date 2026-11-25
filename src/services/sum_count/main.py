@@ -262,7 +262,6 @@ class SumCount:
     def _handle_data(self, ack, *args):
         logging.info("Recibido por aca")
         message_id, req_id, batches, messages = args
-        producer = message_id.split(":")[0]
 
         fault_tolerance.crash(at="BEFORE_SAVE_PENDING")
         if not self._store.begin_data(req_id, message_id, messages):
