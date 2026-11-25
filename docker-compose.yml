@@ -147,7 +147,7 @@ services:
       GATEWAY_PREFIX: gateway
       IMAGE_DOWNLOADER_INSTANCES: '3'
       IMAGE_DOWNLOADER_PREFIX: image_downloader
-      IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
+      IMAGE_DOWNLOADER_QUEUE_PREFIX: image_downloader_queue
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -165,7 +165,7 @@ services:
       GATEWAY_PREFIX: gateway
       IMAGE_DOWNLOADER_INSTANCES: '3'
       IMAGE_DOWNLOADER_PREFIX: image_downloader
-      IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
+      IMAGE_DOWNLOADER_QUEUE_PREFIX: image_downloader_queue
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -183,7 +183,7 @@ services:
       GATEWAY_PREFIX: gateway
       IMAGE_DOWNLOADER_INSTANCES: '3'
       IMAGE_DOWNLOADER_PREFIX: image_downloader
-      IMAGE_DOWNLOADER_QUEUE: image_downloader_queue
+      IMAGE_DOWNLOADER_QUEUE_PREFIX: image_downloader_queue
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -440,7 +440,7 @@ services:
       SUM_AMOUNT_PREFIX: sum_amount
       SUM_AMOUNT_QUEUE: sum_amount_queue
       AVERAGE_INSTANCES: '3'
-      AVERAGE_QUEUE: average_queue
+      AVERAGE_QUEUE_PREFIX: average_queue
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -459,7 +459,7 @@ services:
       SUM_AMOUNT_PREFIX: sum_amount
       SUM_AMOUNT_QUEUE: sum_amount_queue
       AVERAGE_INSTANCES: '3'
-      AVERAGE_QUEUE: average_queue
+      AVERAGE_QUEUE_PREFIX: average_queue
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -478,7 +478,7 @@ services:
       SUM_AMOUNT_PREFIX: sum_amount
       SUM_AMOUNT_QUEUE: sum_amount_queue
       AVERAGE_INSTANCES: '3'
-      AVERAGE_QUEUE: average_queue
+      AVERAGE_QUEUE_PREFIX: average_queue
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -493,7 +493,7 @@ services:
       LOG_LEVEL: INFO
       ID: '0'
       MOM_HOST: rabbitmq
-      AVERAGE_QUEUE: average_queue
+      AVERAGE_QUEUE_PREFIX: average_queue
       SUM_AMOUNT_INSTANCES: '3'
       JOIN_AVERAGE_INSTANCES: '3'
       JOIN_AVERAGE_QUEUE: join_average_queue
@@ -511,7 +511,7 @@ services:
       LOG_LEVEL: INFO
       ID: '1'
       MOM_HOST: rabbitmq
-      AVERAGE_QUEUE: average_queue
+      AVERAGE_QUEUE_PREFIX: average_queue
       SUM_AMOUNT_INSTANCES: '3'
       JOIN_AVERAGE_INSTANCES: '3'
       JOIN_AVERAGE_QUEUE: join_average_queue
@@ -529,7 +529,7 @@ services:
       LOG_LEVEL: INFO
       ID: '2'
       MOM_HOST: rabbitmq
-      AVERAGE_QUEUE: average_queue
+      AVERAGE_QUEUE_PREFIX: average_queue
       SUM_AMOUNT_INSTANCES: '3'
       JOIN_AVERAGE_INSTANCES: '3'
       JOIN_AVERAGE_QUEUE: join_average_queue

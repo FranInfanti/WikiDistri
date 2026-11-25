@@ -29,7 +29,6 @@ class SumCount:
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
         self.is_running = True
-
         self.words: dict[int, dict[str, list[int]]] = {}
         self.recv: dict[int, int] = {}
         self._finished: set[int] = set()
@@ -220,7 +219,6 @@ class SumCount:
 
         top_process_queue_name = self.join_top_queue_names[req_id % JOIN_TOP_INSTANCES]
         logging.debug(f"Sending OPCODE_DATA message to {top_process_queue_name} for req_id={req_id}")
-
         self.publisher.publish_queue(
             queue=top_process_queue_name,
             message=message_protocol.internal.serialize(

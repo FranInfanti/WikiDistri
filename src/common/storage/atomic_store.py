@@ -56,4 +56,3 @@ class AtomicStore:
             os.fsync(f.fileno())
 
         os.replace(tmp, self.path)
-

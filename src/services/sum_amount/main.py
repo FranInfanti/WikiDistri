@@ -1,4 +1,3 @@
-import itertools
 import os
 import time
 import signal
@@ -30,7 +29,6 @@ class SumAmount:
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
         self.is_running = True
-        self.message_counter = itertools.count(1)
         self.partials: dict[int, list[int]] = {}
         self.state_lock = threading.Lock()
         self.average_queue_names = [f"{AVERAGE_QUEUE}_{i}" for i in range(AVERAGE_INSTANCES)]
@@ -43,7 +41,7 @@ class SumAmount:
         self._pending_eof: dict[int, str] = {}
 
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
-            host=MOM_HOST, queue_name=f"{SUM_AMOUNT_QUEUE}_{ID}"
+            host=MOM_HOST, queue_name=SUM_AMOUNT_QUEUE
         )
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST, queues=self.average_queue_names
