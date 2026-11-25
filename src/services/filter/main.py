@@ -135,15 +135,16 @@ class Filter:
             logging.info("Replaying PENDING batch req_id=%s batch_id=%s", req_id, batch_id)
             recv, sent = self._filter_message(batch_id, req_id, None, payload)
 
-            tracker = self._get_tracker(req_id)
-            tracker.record_recv(recv)
-            tracker.record_sent(IMAGE_DOWNLOADER_PREFIX, sent)
-
             self._state.put(msg_key, {
                 "stage": COMPLETED_STAGE,
                 "recv_delta": recv,
                 "sent_delta": sent,
             })
+
+            with self._trackers_lock:
+                tracker = self._get_tracker(req_id)
+                tracker.record_recv(recv)
+                tracker.record_sent(IMAGE_DOWNLOADER_PREFIX, sent)
 
         # Re-trigger any EOF whose coordinator call did not complete before crash.
         for eof_key in self._state.pending(EOF_PENDING_STAGE):
@@ -341,17 +342,17 @@ class Filter:
         recv, sent = self._filter_message(*args)
         fault_tolerance.crash(at="AFTER_DATA_FILTER")
 
-        with self._trackers_lock:
-            tracker = self._get_tracker(req_id)
-            tracker.record_recv(recv)
-            tracker.record_sent(IMAGE_DOWNLOADER_PREFIX, sent)
-
         self._state.put(msg_key, {
             "stage": COMPLETED_STAGE,
             "recv_delta": recv,
             "sent_delta": sent,
         })
         fault_tolerance.crash(at="AFTER_DATA_COMPLETED")
+
+        with self._trackers_lock:
+            tracker = self._get_tracker(req_id)
+            tracker.record_recv(recv)
+            tracker.record_sent(IMAGE_DOWNLOADER_PREFIX, sent)
 
     def _handle_eof(self, ack: Callable, *args):
         batch_id, req_id, _, expected_messages = args
