@@ -57,7 +57,7 @@ class Filter:
         self.image_downloader_queue_names = [f"{IMAGE_DOWNLOADER_PREFIX}_{i}" for i in range(IMAGE_DOWNLOADER_INSTANCES)]
         self.publisher_downloader = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
-            queues=[IMAGE_DOWNLOADER_QUEUE],
+            queues=[*self.image_downloader_queue_names],
         )
         self.publisher_gateway = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
@@ -230,6 +230,7 @@ class Filter:
             queue=queue,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_DATA,
+                message_id=message_id,
                 req_id=req_id,
                 batches=len(batch),
                 message=batch,
@@ -291,6 +292,7 @@ class Filter:
             queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_EOF,
+                message_id=message_id,
                 req_id=req_id
             )
         )
@@ -299,7 +301,7 @@ class Filter:
 
         message_id = zlib.crc32(f"{FILTER_PREFIX}_{ID}_{batch_id}_{IMAGE_DOWNLOADER_PREFIX}".encode())
         self.publisher_downloader.publish_queue(
-            queue=IMAGE_DOWNLOADER_QUEUE,
+            queue=self.image_downloader_queue_names[message_id % IMAGE_DOWNLOADER_INSTANCES],
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_EOF,
                 message_id=f"{FILTER_PREFIX}_{ID}_{message_id}",

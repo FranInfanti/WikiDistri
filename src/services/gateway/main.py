@@ -20,6 +20,7 @@ BATCH_SIZE = int(os.environ["BATCH_SIZE"])
 MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
 GATEWAY_PREFIX = os.environ.get("GATEWAY_PREFIX", "gateway")
 FILTER_QUEUE = os.environ.get("FILTER_QUEUE", "filter_queue")
+FILTER_INSTANCES = int(os.environ["FILTER_INSTANCES"])
 WORD_READER_QUEUE = os.environ.get("WORD_READER_QUEUE", "word_reader_queue")
 WORD_READER_INSTANCES = int(os.environ["WORD_READER_INSTANCES"])
 
@@ -78,9 +79,12 @@ class Gateway:
     def __init__(self, host: str, port: int):
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
+        self.filter_queue_names = [f"{FILTER_QUEUE}_{i}" for i in range(FILTER_INSTANCES)]
+        self.word_reader_queue_names = [f"{WORD_READER_QUEUE}_{i}" for i in range(WORD_READER_INSTANCES)]
+
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST,
-            queues=[FILTER_QUEUE, WORD_READER_QUEUE]
+            queues=[*self.filter_queue_names, *self.word_reader_queue_names],
         )
 
         self.input_queues = {
@@ -174,9 +178,10 @@ class Gateway:
             if batch and (len(batch) >= BATCH_SIZE or batch_size + record_size > max_message_size):
                 message_id = next(seq_num)
                 self.publisher.publish_queue(
-                    queue=queue,
+                    queue=f"{queue}_{message_id % SHARDS[queue]}",
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_DATA,
+                        message_id=message_id,
                         req_id=req_id,
                         batches=len(batch),
                         message=batch,
@@ -196,9 +201,10 @@ class Gateway:
         if batch:
             message_id = next(seq_num)
             self.publisher.publish_queue(
-                queue=queue,
+                queue=f"{queue}_{message_id % SHARDS[queue]}",
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
+                    message_id=message_id,
                     req_id=req_id,
                     batches=len(batch),
                     message=batch,
@@ -256,7 +262,7 @@ class Gateway:
     def _download(self, job_id, message, ack, nack):
         req_id = None
         try:
-            opcode, req_id, batches, messages = (
+            opcode, message_id, req_id, batches, messages = (
                 message_protocol.internal.deserialize(message)
             )
 

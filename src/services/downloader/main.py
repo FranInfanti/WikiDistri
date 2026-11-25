@@ -304,6 +304,7 @@ class ImageDownloader:
                 queue=self._GATEWAY_QUEUE,
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
+                    message_id=message_id,
                     req_id=req_id,
                     batches=len(batch),
                     message=batch,
