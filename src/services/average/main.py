@@ -154,8 +154,7 @@ class Average:
         logging.debug(f"Sending OPCODE_DATA message to all {JOIN_AVERAGE_QUEUE_PREFIX} for req_id={req_id}")
         message = message_protocol.internal.serialize(
             opcode=message_protocol.OPCODE_DATA,
-            message_id=message_id,
-            req_id=req_id,
+            req_id=req_id, 
             batches=1, 
             message=average,
         )
@@ -168,7 +167,6 @@ class Average:
         logging.debug(f"Sending OPCODE_EOF message to all {JOIN_AVERAGE_QUEUE_PREFIX} for req_id={req_id}")
         eof = message_protocol.internal.serialize(
             opcode=message_protocol.OPCODE_EOF,
-            message_id=message_id,
             req_id=req_id,
             batches=1,
             message=0
