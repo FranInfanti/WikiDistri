@@ -13,8 +13,7 @@ MOM_HOST = os.environ.get("MOM_HOST", "rabbitmq")
 SUM_COUNT_INSTANCES = int(os.environ.get("SUM_COUNT_INSTANCES", 1))
 TOP_SIZE = int(os.environ.get("TOP_SIZE", 20))
 JOIN_TOP_QUEUE_PREFIX = os.environ.get("JOIN_TOP_QUEUE_PREFIX", "join_top_queue")
-# Ajustá estas dos a tu topología real (destino del top final)
-OUTPUT_QUEUE_NAMES = os.environ.get("OUTPUT_QUEUES", "output_queue").split(",")
+GATEWAY_PREFIX = os.environ.get("GATEWAY_PREFIX", "gateway")
 JOIN_TOP_STATE_PATH = os.environ.get("JOIN_TOP_STATE_PATH", "tmp/state.json")
 
 # Single store for per-message idempotency and crash recovery.  Keys:
@@ -28,6 +27,7 @@ AGGREGATE_STAGE = "AGGREGATING"
 
 class JoinTop:
     _TIMEOUT = 5.0
+    _GATEWAY_QUEUE = f"{GATEWAY_PREFIX}_4"
 
     def __init__(self):
         signal.signal(signal.SIGTERM, self._sigterm_handler)
@@ -44,8 +44,7 @@ class JoinTop:
             queue_name=f"{JOIN_TOP_QUEUE_PREFIX}_{ID}",
         )
         self.publisher = rabbitmq.RabbitPublisher(
-            host=MOM_HOST,
-            queues=OUTPUT_QUEUE_NAMES,
+            host=MOM_HOST, queues=[self._GATEWAY_QUEUE]
         )
 
         self.__post_init__()
@@ -144,8 +143,6 @@ class JoinTop:
             return len(new_recv)
 
     def _send_top(self, req_id: int):
-        message_id = zlib.crc32(f"{JOIN_TOP_QUEUE_PREFIX}_{ID}_{req_id}".encode())
-
         with self._requests_lock:
             _, top = self._requests[req_id]
             top = list(top)
@@ -154,22 +151,20 @@ class JoinTop:
 
         message = message_protocol.internal.serialize(
             opcode=message_protocol.OPCODE_DATA,
-            message_id=message_id,
+            message_id=zlib.crc32(f"{JOIN_TOP_QUEUE_PREFIX}_{ID}_{req_id}".encode()),
             req_id=req_id,
-            batches=1,
+            batches=len(top),
             message=[[w, c] for w, c in top],
         )
         eof = message_protocol.internal.serialize(
             opcode=message_protocol.OPCODE_EOF,
-            message_id=message_id,
+            message_id=zlib.crc32(f"{JOIN_TOP_QUEUE_PREFIX}_{ID}_{req_id}_eof".encode()),
             req_id=req_id,
             batches=1,
             message=0,
         )
-        for name in OUTPUT_QUEUE_NAMES:
-            self.publisher.publish_queue(queue=name, message=message)
-        for name in OUTPUT_QUEUE_NAMES:
-            self.publisher.publish_queue(queue=name, message=eof)
+        self.publisher.publish_queue(queue=self._GATEWAY_QUEUE, message=message)
+        self.publisher.publish_queue(queue=self._GATEWAY_QUEUE, message=eof)
 
     def _handle_data(self, ack: Callable, *args):
         batch_id, req_id, batches, messages = args
