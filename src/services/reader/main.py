@@ -92,9 +92,10 @@ class WordReader:
 
         self.sum_count_queue_names = [f"{SUM_COUNT_QUEUE}_{i}" for i in range(SUM_COUNT_INSTANCES)]
         self.join_average_queue_names = [f"{JOIN_AVERAGE_QUEUE}_{i}" for i in range(JOIN_AVERAGE_INSTANCES)]
+        self.sum_amount_queue_names = [f"{SUM_AMOUNT_QUEUE}_{i}" for i in range(SUM_AMOUNT_INSTANCES)]
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST, 
-            queue_name=WORD_READER_QUEUE
+            queue_name=f"{WORD_READER_QUEUE}_{ID}"
         )
 
         self.count_publisher = rabbitmq.RabbitPublisher(
@@ -327,6 +328,7 @@ class WordReader:
                 queue=self.sum_count_queue_names[shard],
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
+                    message_id=message_id,
                     req_id=req_id, 
                     batches=len(message), 
                     message=message,
@@ -344,6 +346,7 @@ class WordReader:
                 queue=self.join_average_queue_names[shard],
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
+                    message_id=message_id,
                     req_id=req_id, 
                     batches=len(batch), 
                     message=batch,
@@ -358,6 +361,7 @@ class WordReader:
                 queue=f"{SUM_AMOUNT_QUEUE}_{message_id % SUM_AMOUNT_INSTANCES}",
                 message=message_protocol.internal.serialize(
                     opcode=message_protocol.OPCODE_DATA,
+                    message_id=message_id,
                     req_id=req_id, batches=len(amount_batch), message=amount_batch,
                 ),
             )
@@ -378,6 +382,7 @@ class WordReader:
                     queue=self.sum_count_queue_names[0],
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
+                        message_id=message_id,
                         req_id=req_id,
                         batches=1,
                         message=sent,
@@ -390,6 +395,7 @@ class WordReader:
                     queue=self.join_average_queue_names[0],
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
+                        message_id=message_id,
                         req_id=req_id,
                         batches=1,
                         message=sent,
@@ -402,6 +408,7 @@ class WordReader:
                     queue=f"{SUM_AMOUNT_QUEUE}_{message_id % SUM_AMOUNT_INSTANCES}",
                     message=message_protocol.internal.serialize(
                         opcode=message_protocol.OPCODE_EOF,
+                        message_id=message_id,
                         req_id=req_id,
                         batches=1,
                         message=sent,
