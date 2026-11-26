@@ -184,7 +184,7 @@ class Average:
         batch_id, req_id, batches, messages = args
         msg_key = f"batch:{req_id}:{batch_id}"
 
-        stage = self._state.get(msg_key).get(stage)
+        stage = self._state.get(msg_key).get("stage")
         if stage is not None:
             logging.warning(f"Duplicate redelivery from broker for req_id={req_id}; acknowledge and discard")
             ack()
