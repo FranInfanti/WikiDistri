@@ -16,14 +16,18 @@ JOIN_AVERAGE_QUEUE_PREFIX = os.environ.get("JOIN_AVERAGE_QUEUE_PREFIX", "join_av
 AVERAGE_QUEUE_PREFIX = os.environ.get("AVERAGE_QUEUE_PREFIX", "average_queue")
 
 # Single store for per-message idempotency and crash recovery.  Keys:
-#   "batch:{req_id}:{batch_id}" → DATA batches received but not yet aggregated
+#   "batch:{req_id}:{batch_id}" → DATA batches received
 #       PENDING     : {"stage": PENDING, "payload": [sum_id, words, articles]}
+#       COMPLETED   : {"stage": COMPLETED}
 #   "agg:{req_id}"              → running aggregate of a request
 #       AGGREGATING : {"stage": AGGREGATING, "recv": [sum_id, ...], "words": N, "articles": N}
+#       FINISHED    : {"stage": FINISHED}
 AVERAGE_STATE_PATH = os.environ.get("AVERAGE_STATE_PATH", f"tmp/state.json")
 
 PENDING_STAGE = "PENDING"
+COMPLETED_STAGE = "COMPLETED"
 AGGREGATE_STAGE = "AGGREGATING"
+FINISHED_STAGE = "FINISHED"
 
 class Average:
     _TIMEOUT = 5.0
@@ -74,7 +78,7 @@ class Average:
 
             logging.info("Replaying PENDING batch %s", key)
             self._add_partial(req_id, payload)  # idempotent thanks to "recv"
-            self._state.delete(key)
+            self._state.put(key, {"stage": COMPLETED_STAGE})
         
         with self._requests_lock:
             complete = [
@@ -86,7 +90,7 @@ class Average:
 
     def _finish_request(self, req_id: int):
         self._send_average(req_id)
-        self._state.delete(f"agg:{req_id}")
+        self._state.put(f"agg:{req_id}", {"stage": FINISHED_STAGE})
         with self._requests_lock:
             self._requests.pop(req_id, None)
 
@@ -118,11 +122,15 @@ class Average:
         logging.info("All resources have been released; goodbye")
 
 
-    def _add_partial(self, req_id: int, messages: list) -> int:
+    def _add_partial(self, req_id: int, messages: list):
         logging.debug(f"Received an OPCODE_DATA message from req_id={req_id}")
 
         sum_id, words, articles = messages
         with self._requests_lock:
+            if self._state.get(f"agg:{req_id}").get("stage") == FINISHED_STAGE:
+                logging.warning(f"Ignoring late/duplicate partial from sum_{sum_id} for already-finished req_id={req_id}")
+                return 0
+
             recv, totals = self._requests.setdefault(req_id, (set(), [0, 0]))
 
             if sum_id in recv:
@@ -143,7 +151,8 @@ class Average:
             return len(new_recv)
 
     def _send_average(self, req_id: int):
-        message_id = zlib.crc32(f"{AVERAGE_QUEUE_PREFIX}_{ID}_{req_id}_{JOIN_AVERAGE_QUEUE_PREFIX}".encode())
+        data_message_id = zlib.crc32(f"{AVERAGE_QUEUE_PREFIX}_{ID}_{req_id}_{JOIN_AVERAGE_QUEUE_PREFIX}_data".encode())
+        eof_message_id = zlib.crc32(f"{AVERAGE_QUEUE_PREFIX}_{ID}_{req_id}_{JOIN_AVERAGE_QUEUE_PREFIX}_eof".encode())
         
         with self._requests_lock:
             _, (words, articles) = self._requests.get(req_id)
@@ -154,7 +163,7 @@ class Average:
         logging.debug(f"Sending OPCODE_DATA message to all {JOIN_AVERAGE_QUEUE_PREFIX} for req_id={req_id}")
         message = message_protocol.internal.serialize(
             opcode=message_protocol.OPCODE_DATA,
-            message_id=message_id,
+            message_id=data_message_id,
             req_id=req_id,
             batches=1, 
             message=average,
@@ -168,7 +177,7 @@ class Average:
         logging.debug(f"Sending OPCODE_EOF message to all {JOIN_AVERAGE_QUEUE_PREFIX} for req_id={req_id}")
         eof = message_protocol.internal.serialize(
             opcode=message_protocol.OPCODE_EOF,
-            message_id=message_id,
+            message_id=eof_message_id,
             req_id=req_id,
             batches=1,
             message=0
@@ -195,10 +204,11 @@ class Average:
         fault_tolerance.crash(at="AFTER_SAVE_PENDING")
         ack()
         fault_tolerance.crash(at="AFTER_DATA_ACK")
+        
         recv = self._add_partial(req_id, messages)
         fault_tolerance.crash(at="AFTER_DATA_PROCESSED")
         
-        self._state.delete(msg_key)
+        self._state.put(msg_key, {"stage": COMPLETED_STAGE})
         fault_tolerance.crash(at="AFTER_DATA_COMPLETED")
 
         if recv == SUM_AMOUNT_INSTANCES:
