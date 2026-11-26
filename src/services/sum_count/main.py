@@ -4,9 +4,9 @@ import heapq
 import signal
 import logging
 import threading
-import zlib
 
-from common import entity, middleware, message_protocol, rabbitmq, storage, fault_tolerance
+from collections.abc import Callable
+from common import entity, fault_tolerance, middleware, message_protocol, rabbitmq, storage
 
 ID = int(os.environ["ID"])
 COORDINATOR_ID = int(os.environ["COORDINATOR_ID"])
@@ -19,7 +19,23 @@ SUM_COUNT_PREFIX = os.environ.get("SUM_COUNT_PREFIX", "sum_count")
 SUM_COUNT_QUEUE = os.environ.get("SUM_COUNT_QUEUE", "sum_count_queue")
 JOIN_TOP_INSTANCES = int(os.environ.get("JOIN_TOP_INSTANCES", 1))
 JOIN_TOP_QUEUE = os.environ.get("JOIN_TOP_QUEUE", "join_top_queue")
-SUM_COUNT_STATE_PATH = os.environ.get("SUM_COUNT_STATE_PATH", f"tmp/{SUM_COUNT_PREFIX}/{ID}/state.log")
+
+# Same store as the Filter, two files:
+#   STATE : per-message idempotency (small, written twice per message)
+#       "data:{req_id}:{message_id}" -> PENDING {"payload": entries} | COMPLETED {}
+#       "eof:{req_id}:{message_id}"  -> EOF_PENDING {"expected", "batch_id"} | EOF_COMPLETED {}
+#   WORDS : the state of each request (big, written once per message)
+#       "words:{req_id}" -> {"stage": WORDS, "words": {word: [en, fr]}, "recv": N, "last_applied": message_id}
+# Keeping the words apart means a PENDING/COMPLETED write does not rewrite them.
+SUM_COUNT_STATE_PATH = os.environ.get("SUM_COUNT_STATE_PATH", f"tmp/{SUM_COUNT_PREFIX}/{ID}/state.json")
+SUM_COUNT_WORDS_PATH = os.environ.get("SUM_COUNT_WORDS_PATH", f"tmp/{SUM_COUNT_PREFIX}/{ID}/words.json")
+COORDINATOR_STATE_PATH = os.environ.get("COORDINATOR_STATE_PATH", f"tmp/{SUM_COUNT_PREFIX}/{ID}/eof_state.json")
+
+PENDING_STAGE = "PENDING"
+COMPLETED_STAGE = "COMPLETED"
+EOF_PENDING_STAGE = "EOF_PENDING"
+EOF_COMPLETED_STAGE = "EOF_COMPLETED"
+WORDS_STAGE = "WORDS"
 
 class SumCount:
     _TIMEOUT = 5.0
@@ -29,15 +45,25 @@ class SumCount:
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
         self.is_running = True
+
+        # {req_id: {word: [en_count, fr_count]}}, rebuilt from _words_state on startup.
         self.words: dict[int, dict[str, list[int]]] = {}
-        self.recv: dict[int, int] = {}
-        self._finished: set[int] = set()
-        self._lock = threading.RLock()
+        self._received: dict[int, int] = {}      # data messages applied per request
+        self._last_applied: dict[int, str] = {}  # last message folded into words[req_id]
+
+        # The consumer thread mutates `words` and the coordinator thread writes the store,
+        # and a store write dumps every live dict: both go through this lock.
+        self._words_lock = threading.RLock()
 
         self._trackers: dict[int, entity.MessageTracker] = {}
         self._trackers_lock = threading.RLock()
 
-        self._store = storage.WalStore(SUM_COUNT_STATE_PATH)
+        self._state = storage.AtomicStore(SUM_COUNT_STATE_PATH)
+        self._words_state = storage.AtomicStore(SUM_COUNT_WORDS_PATH)
+
+        # Maps req_id -> eof_key. Written by the consumer thread before coordinator.on_eof();
+        # read by the coordinator thread in _on_recv_all.
+        self._pending_eof: dict[int, str] = {}
 
         self.join_top_queue_names = [f"{JOIN_TOP_QUEUE}_{i}" for i in range(JOIN_TOP_INSTANCES)]
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
@@ -53,44 +79,60 @@ class SumCount:
             prefix=SUM_COUNT_PREFIX,
             instances=SUM_COUNT_INSTANCES,
             on_all_recv=self._on_recv_all,
-            get_tracker=self._get_tracker,
             on_commit=self._on_commit,
+            get_tracker=self._get_tracker,
+            state_path=COORDINATOR_STATE_PATH,
         )
 
         self.__post_init__()
 
     def __post_init__(self):
-        for rec in self._store.take_records():
-            req_id = rec["r"]
-            if rec["t"] == "snap":
-                self.words[req_id] = rec["words"]
-                self.recv[req_id] = rec["recv"]
-            elif rec["t"] == "d":
-                self._merge(req_id, rec["e"])
-                self.recv[req_id] = self.recv.get(req_id, 0) + 1
+        # Words and message count come straight from the persisted state of each request.
+        for key in self._words_state.pending(WORDS_STAGE):
+            req_id = int(key.split(":", 1)[1])
+            rec = self._words_state.get(key)
 
-        for req_id, n in self.recv.items():
-            self._get_tracker(req_id).record_recv(n)
+            self.words[req_id] = rec["words"]
+            self._received[req_id] = rec["recv"]
+            self._last_applied[req_id] = rec["last_applied"]
+            self._get_tracker(req_id).record_recv(rec["recv"])
 
-        # primero todos los DATA, después el EOF (igual que el reader)
-        for req_id, expected in self._store.pending_eofs():
-            logging.info("Replaying EOF_PENDING req_id=%s", req_id)
-            self._apply_eof(req_id, expected)
+        # Replay any DATA batch that was ACKed but not yet COMPLETED.
+        for msg_key in self._state.pending(PENDING_STAGE):
+            try:
+                _, req_id_str, message_id = msg_key.split(":", 2)
+                req_id = int(req_id_str)
+            except ValueError:
+                logging.warning("Skipping malformed PENDING key: %s", msg_key)
+                continue
 
-    def _snapshot_all(self) -> dict:
-        with self._lock:
-            return {r: {"recv": self.recv.get(r, 0), "words": self.words.get(r, {})} for r in list(self.words)}
+            entries = self._state.get(msg_key).get("payload")
+            if entries is None:
+                logging.error("Cannot replay message %s req_id=%s — payload missing", message_id, req_id)
+                continue
 
-    def _has_pending_eof(self, req_id: int) -> bool:
-        return self._store.has_eof(req_id)
+            logging.info("Replaying PENDING message %s req_id=%s", message_id, req_id)
+            if self._last_applied.get(req_id) == message_id:
+                # The words were saved but the crash came before COMPLETED: do not add it twice.
+                logging.info("Message %s was already folded into the words; marking it COMPLETED", message_id)
+            else:
+                self._apply(req_id, message_id, entries)
 
-    def _merge(self, req_id: int, entries: list[list]):
-        with self._lock:
-            request_words = self.words.setdefault(req_id, {})
-            for word, en_count, fr_count in entries:
-                counts = request_words.setdefault(word, [0, 0])
-                counts[0] += en_count
-                counts[1] += fr_count
+            self._state.put(msg_key, {"stage": COMPLETED_STAGE})
+
+        # Re-trigger any EOF whose coordinator call did not complete before crash.
+        for eof_key in self._state.pending(EOF_PENDING_STAGE):
+            try:
+                _, req_id_str, _ = eof_key.split(":", 2)
+                req_id = int(req_id_str)
+            except ValueError:
+                logging.warning("Skipping malformed EOF_PENDING key: %s", eof_key)
+                continue
+
+            rec = self._state.get(eof_key)
+            logging.info("Replaying EOF_PENDING req_id=%s with expected_messages=%s", req_id, rec.get("expected", 0))
+            self._pending_eof[req_id] = eof_key
+            self.coordinator.on_eof(req_id=req_id, expected_messages=rec.get("expected", 0))
 
     def _new_tracker(self):
         return entity.message_tracker.MessageTracker()
@@ -101,9 +143,6 @@ class SumCount:
             if tracker is None:
                 tracker = self._trackers[req_id] = self._new_tracker()
             return tracker
-
-    def _snapshot(self, req_id: int) -> dict:
-        return {"recv": self.recv.get(req_id, 0), "words": self.words.get(req_id, {})}
 
     def _sigterm_handler(self, _signum, _frame):
         logging.info("SIGTERM signal received, proceed to shutdown the service...")
@@ -139,75 +178,86 @@ class SumCount:
             logging.critical("Shutdown timed out with active components: %s", ", ".join(timed_out))
         else:
             logging.info("All resources have been released; goodbye")
-    
-    def _cleanup(self, req_id: int):
-        self._store.delete(req_id)
-        with self._lock:
-            self.words.pop(req_id, None)
-            self.recv.pop(req_id, None)
-        with self._trackers_lock:
-            self._trackers.pop(req_id, None)
+
+    # Output ids come from the content (never from an in-memory counter), so a replay
+    # after a crash sends exactly the same ids and the receivers can drop the repeats.
+    def _message_id(self, req_id: int, suffix: str) -> str:
+        return f"{SUM_COUNT_PREFIX}_{ID}:{req_id}_{suffix}"
 
     def _on_recv_all(self, req_id: int, _: list):
         logging.debug(f"Sending OPCODE_EOF message to {self._GATEWAY_QUEUE} for req_id={req_id}")
+
+        eof_key = self._pending_eof[req_id]
+        batch_id = self._state.get(eof_key)["batch_id"]
+
         self.publisher.publish_queue(
             queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_EOF,
-                message_id=f"{SUM_COUNT_PREFIX}_{ID}_{req_id}_eof",
-                req_id=req_id,
-            ),
+                message_id=self._message_id(req_id, f"{batch_id}_eof"),
+                req_id=req_id
+            )
         )
 
-        # recién ahora el request terminó para el coordinador: se borra también el EOF PENDING
-        fault_tolerance.crash(at="BEFORE_EOF_CLEANUP")
-        self._cleanup(req_id)
-        fault_tolerance.crash(at="AFTER_EOF_CLEANUP")
+        fault_tolerance.crash(at="BEFORE_EOF_COMPLETED")
+        self._state.put(eof_key, {"stage": EOF_COMPLETED_STAGE})
+        fault_tolerance.crash(at="AFTER_EOF_COMPLETED")
+
+        self._pending_eof.pop(req_id, None)
 
     def _on_commit(self, req_id: int):
-        with self._lock:
-            request_words = dict(self.words.get(req_id, {}))
+        with self._words_lock:
+            request_words = self.words.pop(req_id, {})
+            self._received.pop(req_id, None)
+            self._last_applied.pop(req_id, None)
 
+        # send common words in English and French to the Gateway
         self._send_common_words(req_id, request_words)
+
+        # send the partial top of words to the Top Process
         self._send_partial_top(req_id, request_words)
         fault_tolerance.crash(at="AFTER_COMMIT_SENT")
 
-        # La instancia con el EOF PENDING conserva el estado hasta _on_recv_all:
-        # si crashea, el replay del EOF retoma el COMMIT y reenvía con los mismos ids.
-        if not self._has_pending_eof(req_id):
-            self._cleanup(req_id)
+        # Everything was sent: the persisted state of the request is no longer needed.
+        with self._words_lock:
+            self._words_state.delete(f"words:{req_id}")
+        self._state.delete_prefix(f"data:{req_id}:")
+        with self._trackers_lock:
+            self._trackers.pop(req_id, None)
 
     def _send_common_words(self, req_id: int, request_words: dict):
         chunk = []
-        sent = 0
-        n_chunks = 0
+        sent = index = 0
 
+        # sorted: chunk `index` holds the same words after a replay
         for word, (en_count, fr_count) in sorted(request_words.items()):
             if en_count > 0 and fr_count > 0:
                 chunk.append(word)
+
                 if len(chunk) == CHUNK_SIZE:
-                    self._send_chunk(req_id, n_chunks, chunk)
-                    n_chunks += 1
+                    self._send_chunk(req_id, index, chunk)
                     sent += len(chunk)
+                    index += 1
                     chunk = []
 
         if chunk:
-            self._send_chunk(req_id, n_chunks, chunk)
+            self._send_chunk(req_id, index, chunk)
             sent += len(chunk)
 
         logging.info(f"{sent} common words were sent out of a total of {len(request_words)} words for req_id={req_id}")
 
-    def _send_chunk(self, req_id: int, n: int, chunk: list[str]):
+    def _send_chunk(self, req_id: int, index: int, chunk: list[str]):
         logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
+
         self.publisher.publish_queue(
             queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_DATA,
-                message_id=zlib.crc32(f"{SUM_COUNT_PREFIX}_{ID}_{req_id}_chunk_{n}".encode()),
+                message_id=self._message_id(req_id, f"common_{index}"),
                 req_id=req_id,
                 batches=len(chunk),
                 message=chunk,
-            ),
+            )
         )
 
     def _send_partial_top(self, req_id: int, request_words: dict):
@@ -219,84 +269,103 @@ class SumCount:
 
         top_process_queue_name = self.join_top_queue_names[req_id % JOIN_TOP_INSTANCES]
         logging.debug(f"Sending OPCODE_DATA message to {top_process_queue_name} for req_id={req_id}")
+
         self.publisher.publish_queue(
             queue=top_process_queue_name,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_DATA,
-                message_id=f"{SUM_COUNT_PREFIX}_{ID}:_{req_id}_top",
+                message_id=self._message_id(req_id, "top"),
                 req_id=req_id,
                 batches=len(entries),
                 message=[ID, entries],
             ),
         )
 
-    def _accumulate(self, req_id: int, producer: str, message_id: str, entries: list[list]):
-        logging.info("Accumulate data for req_id=%s message_id=%s", req_id, message_id)
-        #with self._lock:
+    def _accumulate(self, req_id: int, entries: list[list]):
         request_words = self.words.setdefault(req_id, {})
+
         for word, en_count, fr_count in entries:
             counts = request_words.setdefault(word, [0, 0])
             counts[0] += en_count
             counts[1] += fr_count
-        self.recv[req_id] = self.recv.get(req_id, 0) + 1
 
-        self._store.apply(req_id, producer, message_id, self._snapshot(req_id))
+    def _apply(self, req_id: int, message_id, entries: list[list]):
+        """Fold one message into the words and persist the new state in a single write."""
+        with self._words_lock:
+            self._accumulate(req_id, entries)
+            self._received[req_id] = self._received.get(req_id, 0) + 1
+            self._last_applied[req_id] = str(message_id)
 
-        logging.info("Accumulate data ENDED for req_id=%s message_id=%s", req_id, message_id)
-        fault_tolerance.crash(at="AFTER_DATA_COMPLETED")
+            fault_tolerance.crash(at="BEFORE_SAVE_WORDS")
+            self._words_state.put(f"words:{req_id}", {
+                "stage": WORDS_STAGE,
+                "words": self.words[req_id],
+                "recv": self._received[req_id],
+                "last_applied": str(message_id),
+            })
+            fault_tolerance.crash(at="AFTER_SAVE_WORDS")
+
         with self._trackers_lock:
             self._get_tracker(req_id).record_recv(1)
 
-    def _apply_data(self, req_id: int, entries: list[list]):
-        self._merge(req_id, entries)
-        with self._lock:
-            self.recv[req_id] = self.recv.get(req_id, 0) + 1
-        self._get_tracker(req_id).record_recv(1)
+    def _handle_data(self, ack: Callable, message_id, req_id: int, entries: list[list]):
+        msg_key = f"data:{req_id}:{message_id}"
 
-    def _apply_eof(self, req_id: int, expected):
-        self.coordinator.on_eof(req_id, expected)
-        fault_tolerance.crash(at="AFTER_EOF_FORWARDED")
-
-    def _handle_data(self, ack, *args):
-        message_id, req_id, batches, messages = args
-
-        fault_tolerance.crash(at="BEFORE_SAVE_PENDING")
-        if not self._store.begin_data(req_id, message_id, messages):
-            logging.warning(f"Duplicate redelivery for req_id={req_id} message_id={message_id}; discarding")
+        stage = self._state.get(msg_key).get("stage")
+        if stage is not None:
+            logging.warning(f"Duplicate redelivery from broker for req_id={req_id}; acknowledge and discard")
             ack()
             return
+
+        # Persist payload + mark PENDING in one atomic write before ACK.
+        fault_tolerance.crash(at="BEFORE_SAVE_PENDING")
+        self._state.put(msg_key, {"stage": PENDING_STAGE, "payload": entries})
         fault_tolerance.crash(at="AFTER_SAVE_PENDING")
 
         ack()
         fault_tolerance.crash(at="AFTER_DATA_ACK")
 
-        self._apply_data(req_id, messages)
+        self._apply(req_id, message_id, entries)
+        fault_tolerance.crash(at="AFTER_DATA_PROCESSED")
+
+        self._state.put(msg_key, {"stage": COMPLETED_STAGE})
         fault_tolerance.crash(at="AFTER_DATA_COMPLETED")
 
-        self._store.maybe_compact(self._snapshot_all)
+    def _handle_eof(self, ack: Callable, message_id, req_id: int, expected_messages: int):
+        eof_key = f"eof:{req_id}:{message_id}"
 
-    def _handle_eof(self, ack, *args):
-        message_id, req_id, _, expected = args
-        fault_tolerance.crash(at="BEFORE_SAVE_EOF")
-        if not self._store.begin_eof(req_id, expected):
-            logging.warning(f"Duplicate EOF redelivery for req_id={req_id}; discarding")
+        stage = self._state.get(eof_key).get("stage")
+        if stage is not None: # It is either on EOF_COMPLETED_STAGE or EOF_PENDING_STAGE
+            logging.warning(f"Duplicate redelivery from broker for req_id={req_id}; acknowledge and discard")
             ack()
             return
+
+        # Persist EOF intent before ACK so we can re-trigger coordinator after a crash.
+        fault_tolerance.crash(at="BEFORE_SAVE_EOF")
+        self._state.put(eof_key, {
+            "stage": EOF_PENDING_STAGE,
+            "expected": expected_messages,
+            "batch_id": message_id,
+        })
         fault_tolerance.crash(at="AFTER_SAVE_EOF")
+
+        self._pending_eof[req_id] = eof_key
 
         ack()
         fault_tolerance.crash(at="AFTER_EOF_ACK")
 
-        self._apply_eof(req_id, expected)
+        self.coordinator.on_eof(req_id=req_id, expected_messages=expected_messages)
 
     def process_message(self, message, ack, nack):
         try:
-            opcode, *args = message_protocol.internal.deserialize(message)
+            opcode, message_id, req_id, _, payload = message_protocol.internal.deserialize(message)
 
             if opcode == message_protocol.OPCODE_DATA:
-                self._handle_data(ack, *args)
+                logging.debug(f"Received OPCODE_DATA message for req_id={req_id}")
+                self._handle_data(ack, message_id, req_id, payload)
             elif opcode == message_protocol.OPCODE_EOF:
-                self._handle_eof(ack, *args)
+                logging.debug(f"Received OPCODE_EOF message for req_id={req_id}")
+                self._handle_eof(ack, message_id, req_id, payload)
             else:
                 logging.warning(f"Unexpected OPCODE received: {opcode}")
         except Exception:
@@ -330,4 +399,3 @@ def main():
 
 if __name__ == "__main__":
     SystemExit(main())
-    

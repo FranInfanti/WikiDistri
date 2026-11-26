@@ -45,6 +45,15 @@ class AtomicStore:
             self._data.pop(str(key), None)
             self._write()
 
+    def delete_prefix(self, prefix: str):
+        """Remove every key that starts with `prefix` in a single atomic write."""
+        with self._lock:
+            keys = [k for k in self._data if k.startswith(prefix)]
+            for key in keys:
+                del self._data[key]
+            if keys:
+                self._write()
+
     def _write(self):
         directory = os.path.dirname(self.path) or "."
         os.makedirs(directory, exist_ok=True)
