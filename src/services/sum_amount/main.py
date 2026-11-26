@@ -1,3 +1,4 @@
+import itertools
 import os
 import time
 import signal
@@ -41,7 +42,7 @@ class SumAmount:
         self._pending_eof: dict[int, str] = {}
 
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
-            host=MOM_HOST, queue_name=SUM_AMOUNT_QUEUE
+            host=MOM_HOST, queue_name=f"{SUM_AMOUNT_QUEUE}_{ID}"
         )
         self.publisher = rabbitmq.RabbitPublisher(
             host=MOM_HOST, queues=self.average_queue_names
@@ -56,6 +57,50 @@ class SumAmount:
             get_tracker=self._get_tracker,
         )
 
+    def __post_init__(self):
+        for msg_key in self._state.pending(COMPLETED_STAGE):
+            try:
+                _, req_id_str, _ = msg_key.split(":")
+                req_id = int(req_id_str)
+            except ValueError:
+                logging.warning("Skipping malformed COMPLETED key: %s", msg_key)
+                continue
+
+            rec = self._state.get(msg_key)
+            tracker = self._get_tracker(req_id)
+            tracker.record_recv(rec.get("recv_delta", 0))
+            self.partials[req_id] = [rec.get("amount_delta", 0), rec.get("recv_delta", 0)]
+
+        for msg_key in self._state.pending(PENDING_STAGE):
+            try:
+                _, req_id_str, batch_id_str = msg_key.split(":")
+                req_id = int(req_id_str)
+                batch_id = int(batch_id_str)
+            except ValueError:
+                logging.warning("Skipping malformed PENDING key: %s", msg_key)
+                continue
+
+            rec = self._state.get(msg_key)
+            batches = rec.get("batches")
+            payload = rec.get("payload")
+            if payload is None:
+                logging.error(
+                    "Cannot replay batch req_id=%s batch_id=%s — payload missing",
+                    req_id, batch_id,
+                )
+                continue
+
+            logging.info("Replaying PENDING batch req_id=%s batch_id=%s", req_id, batch_id)
+            partial = self._accumulate(req_id, payload)
+            tracker = self._get_tracker(req_id)
+            tracker.record_recv(batches)
+
+            self._state.put(msg_key, {
+                "stage": COMPLETED_STAGE,
+                "recv_delta": batches,
+                "amount_delta": partial,
+            })
+    
     def _sigterm_handler(self, _signum, _frame):
         logging.info("SIGTERM signal received, proceed to shutdown the service...")
         self.is_running = False
