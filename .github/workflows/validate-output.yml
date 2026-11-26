@@ -1,4 +1,4 @@
-name: Validate output
+name: CI
 
 on:
   push:
@@ -53,4 +53,10 @@ jobs:
             exit 1
           fi
 
-          python scripts/validate_output.py "$run_dir" output/expected_5
+          expected_dir="$(find output -mindepth 1 -maxdepth 1 -type d -name 'expected_*' -print | sort | tail -n 1)"
+          if [[ -z "$expected_dir" ]]; then
+            echo "::error::No expected_* directory was generated"
+            exit 1
+          fi
+
+          python scripts/validate_output.py "$run_dir" "$expected_dir"
