@@ -190,11 +190,16 @@ class Average:
             ack()
             return
 
+        fault_tolerance.crash(at="BEFORE_SAVE_PENDING")
         self._state.put(msg_key, {"stage": PENDING_STAGE, "payload": messages})
+        fault_tolerance.crash(at="AFTER_SAVE_PENDING")
         ack()
-
+        fault_tolerance.crash(at="AFTER_DATA_ACK")
         recv = self._add_partial(req_id, messages)
+        fault_tolerance.crash(at="AFTER_DATA_PROCESSED")
+        
         self._state.delete(msg_key)
+        fault_tolerance.crash(at="AFTER_DATA_COMPLETED")
 
         if recv == SUM_AMOUNT_INSTANCES:
             self._finish_request(req_id)

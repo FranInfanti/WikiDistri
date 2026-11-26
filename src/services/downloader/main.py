@@ -396,7 +396,7 @@ class ImageDownloader:
         fault_tolerance.crash(at="AFTER_DATA_ACK")
 
         recv = self._download_image(*args)
-        fault_tolerance.crash(at="AFTER_DATA_DOWNLOAD")
+        fault_tolerance.crash(at="AFTER_DATA_PROCESSED")
 
         self._state.put(msg_key, {
             "stage": COMPLETED_STAGE,

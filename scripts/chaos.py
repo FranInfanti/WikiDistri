@@ -22,14 +22,23 @@ import time
 from collections import Counter
 from datetime import datetime
 
-PROCESSES = [f"word_reader_{i}" for i in range(4)]
+PROCESSES = (
+    [f"filter_{i}" for i in range(3)]+ 
+    [f"image_downloader_{i}" for i in range(3)]+ 
+    [f"word_reader_{i}" for i in range(4)]+ 
+    [f"sum_count_{i}" for i in range(4)]+
+    [f"sum_amount_{i}" for i in range(3)]+
+    [f"join_top_{i}" for i in range(3)]+
+    [f"average_{i}" for i in range(3)]+
+    [f"join_average_{i}" for i in range(3)]
+    )
+
 POINTS = [
     "BEFORE_SAVE_PENDING", "AFTER_SAVE_PENDING", "AFTER_DATA_ACK",
     "AFTER_DATA_PROCESSED", "AFTER_DATA_COMPLETED",
     "BEFORE_SAVE_EOF", "AFTER_SAVE_EOF", "AFTER_EOF_ACK",
     "AFTER_EOF_COMPLETED", "BEFORE_EOF_COMPLETED",
 ]
-
 
 def log(msg: str):
     print(f"{datetime.now():%H:%M:%S} {msg}", flush=True)
