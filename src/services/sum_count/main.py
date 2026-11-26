@@ -258,7 +258,6 @@ class SumCount:
         fault_tolerance.crash(at="AFTER_EOF_FORWARDED")
 
     def _handle_data(self, ack, *args):
-        logging.info("Recibido por aca")
         message_id, req_id, batches, messages = args
 
         fault_tolerance.crash(at="BEFORE_SAVE_PENDING")

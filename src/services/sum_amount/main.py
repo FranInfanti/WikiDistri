@@ -213,7 +213,7 @@ class SumAmount:
                 tracker = self._trackers[req_id] = self._new_tracker()
             return tracker
 
-    def _on_all_recv(self, req_id: int):
+    def _on_all_recv(self, req_id: int, _sent_by_key=None):
         eof_key  = self._pending_eof[req_id]
         fault_tolerance.crash(at="AFTER_EOF_COMPLETED")
         self._state.put(eof_key, {"stage": EOF_COMPLETED_STAGE})
