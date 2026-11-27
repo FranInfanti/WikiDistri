@@ -8,13 +8,13 @@ class MessageTracker:
 
     sent_messages: dict[str, int] = field(default_factory=dict)
     peers_sent: dict[str, list[int]] = field(default_factory=dict)
-    done_peers: int = 0
+    done_peers: set[int] = field(default_factory=set)
 
-    def record_recv(self):
-        self.recv_messages += 1
+    def record_recv(self, n: int):
+        self.recv_messages += n
 
-    def record_sent(self, key: str):
-        self.sent_messages[key] = self.sent_messages.get(key, 0) + 1
+    def record_sent(self, key: str, n: int):
+        self.sent_messages[key] = self.sent_messages.get(key, 0) + n
 
     def record_expected(self, expected_messages: int):
         self.expected_messages = expected_messages
@@ -51,8 +51,8 @@ class MessageTracker:
             for key in keys
         ]
 
-    def record_done(self):
-        self.done_peers += 1
+    def record_done(self, peer_id: int):
+        self.done_peers.add(peer_id)
 
     def all_done(self, amount: int):
-        return self.done_peers == amount
+        return len(self.done_peers) == amount

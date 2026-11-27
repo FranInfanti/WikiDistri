@@ -116,7 +116,9 @@ def build_compose(
                 "BATCH_SIZE": "1000",
                 "MOM_HOST": "rabbitmq",
                 "GATEWAY_PREFIX": "gateway",
+                "FILTER_INSTANCES": str(filters),
                 "FILTER_QUEUE": "filter_queue",
+                "WORD_READER_INSTANCES": str(word_readers),
                 "WORD_READER_QUEUE": "word_reader_queue",
             },
             "ports": ["5000:5000"],
@@ -144,8 +146,11 @@ def build_compose(
                 "GATEWAY_PREFIX": "gateway",
                 "FILTER_INSTANCES": str(filters),
                 "FILTER_PREFIX": "filter",
-                "FILTER_QUEUE": "filter_queue",
-                "IMAGE_DOWNLOADER_QUEUE": "image_downloader_queue",
+                "FILTER_QUEUE_PREFIX": "filter_queue",
+                "IMAGE_DOWNLOADER_INSTANCES": str(image_downloaders),
+                "IMAGE_DOWNLOADER_PREFIX": "image_downloader_queue",
+                "CRASH_NAME": service_name,
+                "CRASH_CONTROL_DIR": "/crash_control"
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
@@ -169,7 +174,9 @@ def build_compose(
                 "GATEWAY_PREFIX": "gateway",
                 "IMAGE_DOWNLOADER_INSTANCES": str(image_downloaders),
                 "IMAGE_DOWNLOADER_PREFIX": "image_downloader",
-                "IMAGE_DOWNLOADER_QUEUE": "image_downloader_queue",
+                "IMAGE_DOWNLOADER_QUEUE_PREFIX": "image_downloader_queue",
+                "CRASH_NAME": service_name,
+                "CRASH_CONTROL_DIR": "/crash_control"
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
@@ -196,9 +203,12 @@ def build_compose(
                 "WORD_READER_QUEUE": "word_reader_queue",
                 "SUM_COUNT_INSTANCES": str(sum_counts),
                 "SUM_COUNT_QUEUE": "sum_count_queue",
+                "SUM_AMOUNT_INSTANCES": str(sum_amounts),
                 "SUM_AMOUNT_QUEUE": "sum_amount_queue",
                 "JOIN_AVERAGE_INSTANCES": str(join_averages),
                 "JOIN_AVERAGE_QUEUE": "join_average_queue",
+                "CRASH_NAME": service_name,
+                "CRASH_CONTROL_DIR": "/crash_control"
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
@@ -227,8 +237,10 @@ def build_compose(
                 "SUM_COUNT_INSTANCES": str(sum_counts),
                 "SUM_COUNT_PREFIX": "sum_count",
                 "SUM_COUNT_QUEUE": "sum_count_queue",
-                "JOIN_TOP_INSTANCES": "1",
+                "JOIN_TOP_INSTANCES": str(join_tops),
                 "JOIN_TOP_QUEUE": "join_top_queue",
+                "CRASH_NAME": service_name,
+                "CRASH_CONTROL_DIR": "/crash_control"
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
@@ -254,6 +266,8 @@ def build_compose(
                 "GATEWAY_PREFIX": "gateway",
                 "JOIN_TOP_QUEUE": "join_top_queue",
                 "SUM_COUNT_INSTANCES": str(sum_counts),
+                "CRASH_NAME": service_name,
+                "CRASH_CONTROL_DIR": "/crash_control"
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
@@ -279,7 +293,9 @@ def build_compose(
                 "SUM_AMOUNT_PREFIX": "sum_amount",
                 "SUM_AMOUNT_QUEUE": "sum_amount_queue",
                 "AVERAGE_INSTANCES": str(averages),
-                "AVERAGE_QUEUE": "average_queue",
+                "AVERAGE_QUEUE_PREFIX": "average_queue",
+                "CRASH_NAME": service_name,
+                "CRASH_CONTROL_DIR": "/crash_control"
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
@@ -301,10 +317,12 @@ def build_compose(
                 "LOG_LEVEL": log_level,
                 "ID": str(id),
                 "MOM_HOST": "rabbitmq",
-                "AVERAGE_QUEUE": "average_queue",
+                "AVERAGE_QUEUE_PREFIX": "average_queue",
                 "SUM_AMOUNT_INSTANCES": str(sum_amounts),
                 "JOIN_AVERAGE_INSTANCES": str(join_averages),
                 "JOIN_AVERAGE_QUEUE": "join_average_queue",
+                "CRASH_NAME": service_name,
+                "CRASH_CONTROL_DIR": "/crash_control"
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
@@ -332,6 +350,8 @@ def build_compose(
                 "JOIN_AVERAGE_INSTANCES": str(join_averages),
                 "JOIN_AVERAGE_PREFIX": "join_average",
                 "JOIN_AVERAGE_QUEUE": "join_average_queue",
+                "CRASH_NAME": service_name,
+                "CRASH_CONTROL_DIR": "/crash_control"
             },
             "depends_on": {
                 "rabbitmq": {"condition": "service_healthy"},
@@ -387,11 +407,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--filters", type=positive_int, default=3, metavar="N")
     parser.add_argument("--word-readers", type=positive_int, default=4, metavar="N")
     parser.add_argument("--image-downloaders", type=positive_int, default=3, metavar="N")
-    parser.add_argument("--sum-counts", type=positive_int, default=4, metavar="N")
+    parser.add_argument("--sum-counts", type=positive_int, default=10, metavar="N")
     parser.add_argument("--join-tops", type=positive_int, default=3, metavar="N")
     parser.add_argument("--sum-amounts", type=positive_int, default=3, metavar="N")
     parser.add_argument("--averages", type=positive_int, default=3, metavar="N")
-    parser.add_argument("--join-averages", type=positive_int, default=3, metavar="N")
+    parser.add_argument("--join-averages", type=positive_int, default=10, metavar="N")
     parser.add_argument("--clients", type=positive_int, default=1, metavar="N")
     parser.add_argument("--jobs", type=positive_int, default=5, metavar="N")
     parser.add_argument(

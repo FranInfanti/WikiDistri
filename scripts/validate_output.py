@@ -206,4 +206,4 @@ def main(argv=None) -> int:
     return 0 if validate(args.first_dir, args.second_dir, args.show, not args.strict_csv) else 1
 
 if __name__ == "__main__":
-    SystemExit(main())
+    raise SystemExit(main())

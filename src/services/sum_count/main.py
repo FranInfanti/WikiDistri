@@ -3,8 +3,10 @@ import time
 import heapq
 import signal
 import logging
+import threading
 
-from common import middleware, message_protocol, rabbitmq
+from collections.abc import Callable
+from common import entity, fault_tolerance, middleware, message_protocol, rabbitmq, storage
 
 ID = int(os.environ["ID"])
 COORDINATOR_ID = int(os.environ["COORDINATOR_ID"])
@@ -18,6 +20,26 @@ SUM_COUNT_QUEUE = os.environ.get("SUM_COUNT_QUEUE", "sum_count_queue")
 JOIN_TOP_INSTANCES = int(os.environ.get("JOIN_TOP_INSTANCES", 1))
 JOIN_TOP_QUEUE = os.environ.get("JOIN_TOP_QUEUE", "join_top_queue")
 
+# Snapshot every SNAPSHOT_EVERY messages + journal, same store as the Filter, two files:
+#   STATE : the journal (small, ONE write per message)
+#       "data:{req_id}:{message_id}" -> PENDING {"payload": entries, "seq": n}  (journal entry, not yet in a snapshot)
+#                                    -> COMPLETED {}                            (already folded into a snapshot)
+#       "eof:{req_id}:{message_id}"  -> EOF_PENDING {"expected", "batch_id"} | EOF_COMPLETED {}
+#   WORDS : the snapshot of each request (big, written once every SNAPSHOT_EVERY messages)
+#       "words:{req_id}" -> {"stage": WORDS, "words": {word: [en, fr]}, "seq": n}
+# `seq` is the per-request order in which messages were persisted. A snapshot with seq=n contains
+# exactly the messages 1..n, so on restart the journal entries with seq > n are the ones to replay.
+SNAPSHOT_EVERY = int(os.environ.get("SNAPSHOT_EVERY", 50))
+SUM_COUNT_STATE_PATH = os.environ.get("SUM_COUNT_STATE_PATH", f"tmp/{SUM_COUNT_PREFIX}/{ID}/state.json")
+SUM_COUNT_WORDS_PATH = os.environ.get("SUM_COUNT_WORDS_PATH", f"tmp/{SUM_COUNT_PREFIX}/{ID}/words.json")
+COORDINATOR_STATE_PATH = os.environ.get("COORDINATOR_STATE_PATH", f"tmp/{SUM_COUNT_PREFIX}/{ID}/eof_state.json")
+
+PENDING_STAGE = "PENDING"
+COMPLETED_STAGE = "COMPLETED"
+EOF_PENDING_STAGE = "EOF_PENDING"
+EOF_COMPLETED_STAGE = "EOF_COMPLETED"
+WORDS_STAGE = "WORDS"
+
 class SumCount:
     _TIMEOUT = 5.0
     _GATEWAY_QUEUE = f"{GATEWAY_PREFIX}_3"
@@ -26,7 +48,27 @@ class SumCount:
         signal.signal(signal.SIGTERM, self._sigterm_handler)
 
         self.is_running = True
+
+        # {req_id: {word: [en_count, fr_count]}}, rebuilt from _words_state on startup.
         self.words: dict[int, dict[str, list[int]]] = {}
+        self._seq: dict[int, int] = {}       # last seq persisted per request
+        self._since: dict[int, int] = {}     # messages applied since the last snapshot
+        self._journal: dict[int, list[tuple[int, str]]] = {}
+
+        # The consumer thread mutates `words` and the coordinator thread writes the store,
+        # and a store write dumps every live dict: both go through this lock.
+        self._words_lock = threading.RLock()
+
+        self._trackers: dict[int, entity.MessageTracker] = {}
+        self._trackers_lock = threading.RLock()
+
+        self._state = storage.AtomicStore(SUM_COUNT_STATE_PATH)
+        self._words_state = storage.AtomicStore(SUM_COUNT_WORDS_PATH)
+
+        # Maps req_id -> eof_key. Written by the consumer thread before coordinator.on_eof();
+        # read by the coordinator thread in _on_recv_all.
+        self._pending_eof: dict[int, str] = {}
+
         self.join_top_queue_names = [f"{JOIN_TOP_QUEUE}_{i}" for i in range(JOIN_TOP_INSTANCES)]
         self.input_queue = middleware.MessageMiddlewareQueueRabbitMQ(
             host=MOM_HOST, queue_name=f"{SUM_COUNT_QUEUE}_{ID}"
@@ -41,8 +83,76 @@ class SumCount:
             prefix=SUM_COUNT_PREFIX,
             instances=SUM_COUNT_INSTANCES,
             on_all_recv=self._on_recv_all,
-            on_commit=self._on_commit, 
+            on_commit=self._on_commit,
+            get_tracker=self._get_tracker,
+            state_path=COORDINATOR_STATE_PATH,
         )
+
+        self.__post_init__()
+
+    def __post_init__(self):
+        snap_seq: dict[int, int] = {}
+        for key in self._words_state.pending(WORDS_STAGE):
+            req_id = int(key.split(":", 1)[1])
+            rec = self._words_state.get(key)
+
+            self.words[req_id] = rec["words"]
+            self._seq[req_id] = snap_seq[req_id] = rec["seq"]
+            self._get_tracker(req_id).record_recv(rec["seq"])
+
+        journal = []
+        for msg_key in self._state.pending(PENDING_STAGE):
+            try:
+                _, req_id_str, message_id = msg_key.split(":", 2)
+                req_id = int(req_id_str)
+            except ValueError:
+                logging.warning("Skipping malformed PENDING key: %s", msg_key)
+                continue
+
+            rec = self._state.get(msg_key)
+            entries, seq = rec.get("payload"), rec.get("seq")
+            if entries is None or seq is None:
+                logging.error("Cannot replay message %s req_id=%s — payload missing", message_id, req_id)
+                continue
+            journal.append((req_id, seq, message_id, msg_key, entries))
+
+        journal.sort(key=lambda j: (j[0], j[1]))
+
+        folded = []
+        for req_id, seq, message_id, msg_key, entries in journal:
+            if seq <= snap_seq.get(req_id, 0):
+                folded.append(msg_key)
+                continue
+
+            logging.info("Replaying PENDING message %s req_id=%s", message_id, req_id)
+            self._seq[req_id] = max(self._seq.get(req_id, 0), seq)
+            self._journal.setdefault(req_id, []).append((seq, msg_key))
+            self._apply(req_id, message_id, entries, seq)
+
+        self._state.put_many({k: {"stage": COMPLETED_STAGE} for k in folded})
+
+        for eof_key in self._state.pending(EOF_PENDING_STAGE):
+            try:
+                _, req_id_str, _ = eof_key.split(":", 2)
+                req_id = int(req_id_str)
+            except ValueError:
+                logging.warning("Skipping malformed EOF_PENDING key: %s", eof_key)
+                continue
+
+            rec = self._state.get(eof_key)
+            logging.info("Replaying EOF_PENDING req_id=%s with expected_messages=%s", req_id, rec.get("expected", 0))
+            self._pending_eof[req_id] = eof_key
+            self.coordinator.on_eof(req_id=req_id, expected_messages=rec.get("expected", 0))
+
+    def _new_tracker(self):
+        return entity.message_tracker.MessageTracker()
+
+    def _get_tracker(self, req_id: int):
+        with self._trackers_lock:
+            tracker = self._trackers.get(req_id)
+            if tracker is None:
+                tracker = self._trackers[req_id] = self._new_tracker()
+            return tracker
 
     def _sigterm_handler(self, _signum, _frame):
         logging.info("SIGTERM signal received, proceed to shutdown the service...")
@@ -79,52 +189,80 @@ class SumCount:
         else:
             logging.info("All resources have been released; goodbye")
 
+    def _message_id(self, req_id: int, suffix: str) -> str:
+        return f"{SUM_COUNT_PREFIX}_{ID}:{req_id}_{suffix}"
+
     def _on_recv_all(self, req_id: int, _: list):
         logging.debug(f"Sending OPCODE_EOF message to {self._GATEWAY_QUEUE} for req_id={req_id}")
+
+        eof_key = self._pending_eof[req_id]
+        batch_id = self._state.get(eof_key)["batch_id"]
 
         self.publisher.publish_queue(
             queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_EOF,
+                message_id=self._message_id(req_id, f"{batch_id}_eof"),
                 req_id=req_id
             )
         )
 
+        fault_tolerance.crash(at="BEFORE_EOF_COMPLETED")
+        self._state.put(eof_key, {"stage": EOF_COMPLETED_STAGE})
+        fault_tolerance.crash(at="AFTER_EOF_COMPLETED")
+
+        self._pending_eof.pop(req_id, None)
+
     def _on_commit(self, req_id: int):
-        request_words = self.words.pop(req_id, {})
+        with self._words_lock:
+            request_words = self.words.pop(req_id, {})
+            self._seq.pop(req_id, None)
+            self._since.pop(req_id, None)
+            self._journal.pop(req_id, None)
 
         # send common words in English and French to the Gateway
         self._send_common_words(req_id, request_words)
 
         # send the partial top of words to the Top Process
         self._send_partial_top(req_id, request_words)
+        fault_tolerance.crash(at="AFTER_COMMIT_SENT")
+
+        # Everything was sent: the persisted state of the request is no longer needed.
+        with self._words_lock:
+            self._words_state.delete(f"words:{req_id}")
+        self._state.delete_prefix(f"data:{req_id}:")
+        with self._trackers_lock:
+            self._trackers.pop(req_id, None)
 
     def _send_common_words(self, req_id: int, request_words: dict):
         chunk = []
-        sent = 0
+        sent = index = 0
 
-        for word, (en_count, fr_count) in request_words.items():
+        # sorted: chunk `index` holds the same words after a replay
+        for word, (en_count, fr_count) in sorted(request_words.items()):
             if en_count > 0 and fr_count > 0:
                 chunk.append(word)
 
                 if len(chunk) == CHUNK_SIZE:
-                    self._send_chunk(req_id, chunk)
+                    self._send_chunk(req_id, index, chunk)
                     sent += len(chunk)
+                    index += 1
                     chunk = []
 
         if chunk:
-            self._send_chunk(req_id, chunk)
+            self._send_chunk(req_id, index, chunk)
             sent += len(chunk)
 
         logging.info(f"{sent} common words were sent out of a total of {len(request_words)} words for req_id={req_id}")
 
-    def _send_chunk(self, req_id: int, chunk: list[str]):
+    def _send_chunk(self, req_id: int, index: int, chunk: list[str]):
         logging.debug(f"Sending OPCODE_DATA message to {self._GATEWAY_QUEUE} for req_id={req_id}")
 
         self.publisher.publish_queue(
             queue=self._GATEWAY_QUEUE,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_DATA,
+                message_id=self._message_id(req_id, f"common_{index}"),
                 req_id=req_id,
                 batches=len(chunk),
                 message=chunk,
@@ -140,11 +278,12 @@ class SumCount:
 
         top_process_queue_name = self.join_top_queue_names[req_id % JOIN_TOP_INSTANCES]
         logging.debug(f"Sending OPCODE_DATA message to {top_process_queue_name} for req_id={req_id}")
-        
+
         self.publisher.publish_queue(
             queue=top_process_queue_name,
             message=message_protocol.internal.serialize(
                 opcode=message_protocol.OPCODE_DATA,
+                message_id=self._message_id(req_id, "top"),
                 req_id=req_id,
                 batches=len(entries),
                 message=[ID, entries],
@@ -159,21 +298,92 @@ class SumCount:
             counts[0] += en_count
             counts[1] += fr_count
 
-        self.coordinator.record_recv(req_id=req_id)
+    def _apply(self, req_id: int, message_id, entries: list[list], seq: int):
+        with self._words_lock:
+            self._accumulate(req_id, entries)
+            self._since[req_id] = self._since.get(req_id, 0) + 1
+
+            if self._since[req_id] >= SNAPSHOT_EVERY:
+                self._snapshot(req_id, seq)
+
+        with self._trackers_lock:
+            self._get_tracker(req_id).record_recv(1)
+
+    def _snapshot(self, req_id: int, seq: int):
+        fault_tolerance.crash(at="BEFORE_SNAPSHOT")
+        self._words_state.put(f"words:{req_id}", {
+            "stage": WORDS_STAGE,
+            "words": {word: counts[:] for word, counts in self.words[req_id].items()},
+            "seq": seq,
+        })
+        fault_tolerance.crash(at="AFTER_SNAPSHOT")
+
+        entries = self._journal.get(req_id, [])
+        self._journal[req_id] = [(s, k) for s, k in entries if s > seq]
+        self._state.put_many({k: {"stage": COMPLETED_STAGE} for s, k in entries if s <= seq})
+        self._since[req_id] = 0
+
+    def _handle_data(self, ack: Callable, message_id, req_id: int, entries: list[list]):
+        msg_key = f"data:{req_id}:{message_id}"
+
+        stage = self._state.get(msg_key).get("stage")
+        if stage is not None:
+            logging.warning(f"Duplicate redelivery from broker for req_id={req_id}; acknowledge and discard")
+            ack()
+            return
+
+        seq = self._seq.get(req_id, 0) + 1
+        fault_tolerance.crash(at="BEFORE_SAVE_PENDING")
+        self._state.put(msg_key, {"stage": PENDING_STAGE, "payload": entries, "seq": seq})
+        fault_tolerance.crash(at="AFTER_SAVE_PENDING")
+
+        with self._words_lock:
+            self._seq[req_id] = seq
+            self._journal.setdefault(req_id, []).append((seq, msg_key))
+
+        ack()
+        fault_tolerance.crash(at="AFTER_DATA_ACK")
+
+        self._apply(req_id, message_id, entries, seq)
+        fault_tolerance.crash(at="AFTER_DATA_PROCESSED")
+
+    def _handle_eof(self, ack: Callable, message_id, req_id: int, expected_messages: int):
+        eof_key = f"eof:{req_id}:{message_id}"
+
+        stage = self._state.get(eof_key).get("stage")
+        if stage is not None: # It is either on EOF_COMPLETED_STAGE or EOF_PENDING_STAGE
+            logging.warning(f"Duplicate redelivery from broker for req_id={req_id}; acknowledge and discard")
+            ack()
+            return
+
+        # Persist EOF intent before ACK so we can re-trigger coordinator after a crash.
+        fault_tolerance.crash(at="BEFORE_SAVE_EOF")
+        self._state.put(eof_key, {
+            "stage": EOF_PENDING_STAGE,
+            "expected": expected_messages,
+            "batch_id": message_id,
+        })
+        fault_tolerance.crash(at="AFTER_SAVE_EOF")
+
+        self._pending_eof[req_id] = eof_key
+
+        ack()
+        fault_tolerance.crash(at="AFTER_EOF_ACK")
+
+        self.coordinator.on_eof(req_id=req_id, expected_messages=expected_messages)
 
     def process_message(self, message, ack, nack):
         try:
-            opcode, req_id, _, payload = message_protocol.internal.deserialize(message)
+            opcode, message_id, req_id, _, payload = message_protocol.internal.deserialize(message)
 
             if opcode == message_protocol.OPCODE_DATA:
                 logging.debug(f"Received OPCODE_DATA message for req_id={req_id}")
-                self._accumulate(req_id, payload)
+                self._handle_data(ack, message_id, req_id, payload)
             elif opcode == message_protocol.OPCODE_EOF:
                 logging.debug(f"Received OPCODE_EOF message for req_id={req_id}")
-                self.coordinator.on_eof(req_id, payload)
+                self._handle_eof(ack, message_id, req_id, payload)
             else:
                 logging.warning(f"Unexpected OPCODE received: {opcode}")
-            ack()
         except Exception:
             logging.exception("An error occured while processing a message")
             nack()
@@ -205,4 +415,3 @@ def main():
 
 if __name__ == "__main__":
     SystemExit(main())
-    
