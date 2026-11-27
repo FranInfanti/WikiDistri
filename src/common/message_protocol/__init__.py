@@ -23,6 +23,7 @@ OPCODE_PREPARE = 3
 OPCODE_OK = 4
 OPCODE_COMMIT = 5
 OPCODE_DONE = 6
+OPCODE_HELLO = 7
 
 from .internal import serialize, deserialize
 from .external import send_message, recv_message

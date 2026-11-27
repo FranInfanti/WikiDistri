@@ -47,7 +47,12 @@ def send_message(client_socket: socket.socket, message: str | bytes, opcode: int
     batches
         The number of messages contained in the batch.
     """
-    if opcode not in [message_protocol.OPCODE_EOF, message_protocol.OPCODE_DATA, message_protocol.OPCODE_ACK]:
+    if opcode not in [
+        message_protocol.OPCODE_EOF,
+        message_protocol.OPCODE_DATA,
+        message_protocol.OPCODE_ACK,
+        message_protocol.OPCODE_HELLO,
+    ]:
         raise ValueError(f"Invalid message type: {opcode}")
 
     opcode_bytes = opcode.to_bytes(_OPCODE_SIZE, byteorder=message_protocol.ENDIANNESS)

@@ -100,11 +100,21 @@ class Gateway:
         self.server_host = host
         self.server_port = port
         self.req_counter = itertools.count(1)
-        self.seq_num = {}
         self.active_threads = {}
         self.active_threads_lock = threading.Lock()
         self.clients_requests = {}
         self.clients_requests_lock = threading.Lock()
+
+    @staticmethod
+    def _close_socket(sock: socket.socket):
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except Exception:
+            pass
+        try:
+            sock.close()
+        except Exception:
+            pass
 
     def _sigterm_handler(self, _signum, _frame):
         logging.info("SIGTERM signal received, proceed to shutdown the service...")
@@ -226,38 +236,40 @@ class Gateway:
 
     def _upload(self, req_id: int, client_req: client.Client):
         logging.info("Started upload for req_id=%s", req_id)
+        client_socket = client_req.client_socket
+        thread_key = f"{self._HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"
         try:
-            seq_num = {
-                FILTER_QUEUE: itertools.count(0),
-                WORD_READER_QUEUE: itertools.count(0)
-            }
-
             while self.is_running:
                 opcode, batches, payload = (
-                    message_protocol.external.recv_message(client_req.client_socket)
+                    message_protocol.external.recv_message(client_socket)
                 )
                 if opcode == message_protocol.OPCODE_EOF:
+                    if client_req.record_eof_sent():
+                        logging.warning(
+                            f"Duplicate OPCODE_EOF received for req_id={req_id}; ignoring"
+                        )
+                        return
                     logging.info(
                         f"Upload completed for req_id={req_id}; articles_sent={client_req.articles_sent}"
                     )
-                    self._publish_eof(req_id, seq_num, client_req.articles_sent)
+                    self._publish_eof(req_id, client_req.seq_num, client_req.articles_sent)
                     return
                 elif opcode == message_protocol.OPCODE_DATA:
-                    self._publish_data(req_id, seq_num, batches, payload)
+                    self._publish_data(req_id, client_req.seq_num, batches, payload)
                     client_req.record_articles_sent(batches)
                 else:
                     logging.warning(
                         f"Received unexpected opcode={opcode} while uploading req_id={req_id}",
                     )
         except Exception:
-            if self.is_running:
-                logging.exception(f"Failed to upload data for req_id={req_id}")
-            with self.active_threads_lock:
-                client_req.close()
-                self.clients_requests.pop(req_id, None)
+            if client_req.client_socket is client_socket:
+                if self.is_running:
+                    logging.exception(f"Failed to upload data for req_id={req_id}")
+                self._close_socket(client_socket)
         finally:
             with self.active_threads_lock:
-                del self.active_threads[f"{self._HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"]
+                if self.active_threads.get(thread_key) is threading.current_thread():
+                    del self.active_threads[thread_key]
 
     def _download(self, job_id, message, ack, nack):
         req_id = None
@@ -299,8 +311,6 @@ class Gateway:
                         f"All jobs finished for req_id={req_id}; "
                         f"time elapsed={client_req.elapsed_time():.3f} seconds"
                     )
-                    with self.clients_requests_lock:
-                        self.clients_requests.pop(req_id, None)
 
                     client_req.send(
                         opcode=message_protocol.OPCODE_EOF,
@@ -308,6 +318,9 @@ class Gateway:
                         message=b""
                     )
                     client_req.close()
+
+                    with self.clients_requests_lock:
+                        self.clients_requests.pop(req_id, None)
             else:
                 logging.warning(
                     f"Received unexpected opcode={opcode} for req_id={req_id} from job_id={job_id}",
@@ -318,7 +331,7 @@ class Gateway:
                 logging.exception(
                     f"Failed to send response to req_id={req_id} from job_id={job_id}",
                 )
-            ack()
+            nack()
         except Exception:
             if self.is_running:
                 logging.exception(
@@ -327,21 +340,49 @@ class Gateway:
             nack()
 
     def _handle_client_request(self, client_socket: socket.socket):
-        req_id = next(self.req_counter)
-        logging.info(f"Accepted client connection; assigned req_id={req_id}")
+        try:
+            opcode, _, payload = message_protocol.external.recv_message(client_socket)
+        except Exception:
+            if self.is_running:
+                logging.exception("Failed to receive OPCODE_HELLO from client")
+            client_socket.close()
+            return
 
-        client_req = client.Client(
-            client_socket=client_socket,
-            jobs=JOBS
-        )
+        if opcode != message_protocol.OPCODE_HELLO or not payload:
+            logging.warning(f"Expected OPCODE_HELLO with non-empty payload, received opcode={opcode}; closing connection")
+            client_socket.close()
+            return
+
+        client_id = payload
+        with self.clients_requests_lock:
+            existing = next(
+                (
+                    (rid, c)
+                    for rid, c in self.clients_requests.items()
+                    if c.client_id == client_id
+                ),
+                None,
+            )
+            if existing is not None:
+                req_id, client_req = existing
+                client_req.reconnect(client_socket)
+                logging.info(f"Reconnected client_id={client_id!r}; reusing req_id={req_id}")
+            else:
+                req_id = next(self.req_counter)
+                client_req = client.Client(
+                    client_socket=client_socket,
+                    jobs=JOBS,
+                    client_id=client_id,
+                    queues=(FILTER_QUEUE, WORD_READER_QUEUE),
+                )
+                self.clients_requests[req_id] = client_req
+                logging.info(f"Accepted client connection; assigned req_id={req_id}, client_id={client_id!r}")
+
         thread = threading.Thread(
             target=self._upload,
             args=(req_id, client_req),
             name=f"{self._HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"
         )
-
-        with self.clients_requests_lock:
-            self.clients_requests[req_id] = client_req
 
         with self.active_threads_lock:
             self.active_threads[f"{self._HANDLE_CLIENT_REQUEST_PREFIX}-{req_id}"] = thread
@@ -397,4 +438,4 @@ def main():
     return 0
 
 if __name__ == "__main__":
-    SystemExit(main())
+    raise SystemExit(main())
