@@ -88,6 +88,8 @@ services:
       FILTER_QUEUE_PREFIX: filter_queue
       IMAGE_DOWNLOADER_INSTANCES: '3'
       IMAGE_DOWNLOADER_PREFIX: image_downloader_queue
+      CRASH_NAME: filter_0
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -109,6 +111,8 @@ services:
       FILTER_QUEUE_PREFIX: filter_queue
       IMAGE_DOWNLOADER_INSTANCES: '3'
       IMAGE_DOWNLOADER_PREFIX: image_downloader_queue
+      CRASH_NAME: filter_1
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -130,6 +134,8 @@ services:
       FILTER_QUEUE_PREFIX: filter_queue
       IMAGE_DOWNLOADER_INSTANCES: '3'
       IMAGE_DOWNLOADER_PREFIX: image_downloader_queue
+      CRASH_NAME: filter_2
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -148,6 +154,8 @@ services:
       IMAGE_DOWNLOADER_INSTANCES: '3'
       IMAGE_DOWNLOADER_PREFIX: image_downloader
       IMAGE_DOWNLOADER_QUEUE_PREFIX: image_downloader_queue
+      CRASH_NAME: image_downloader_0
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -166,6 +174,8 @@ services:
       IMAGE_DOWNLOADER_INSTANCES: '3'
       IMAGE_DOWNLOADER_PREFIX: image_downloader
       IMAGE_DOWNLOADER_QUEUE_PREFIX: image_downloader_queue
+      CRASH_NAME: image_downloader_1
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -184,6 +194,8 @@ services:
       IMAGE_DOWNLOADER_INSTANCES: '3'
       IMAGE_DOWNLOADER_PREFIX: image_downloader
       IMAGE_DOWNLOADER_QUEUE_PREFIX: image_downloader_queue
+      CRASH_NAME: image_downloader_2
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -201,12 +213,14 @@ services:
       WORD_READER_INSTANCES: '4'
       WORD_READER_PREFIX: word_reader
       WORD_READER_QUEUE: word_reader_queue
-      SUM_COUNT_INSTANCES: '4'
+      SUM_COUNT_INSTANCES: '10'
       SUM_COUNT_QUEUE: sum_count_queue
       SUM_AMOUNT_INSTANCES: '3'
       SUM_AMOUNT_QUEUE: sum_amount_queue
-      JOIN_AVERAGE_INSTANCES: '3'
+      JOIN_AVERAGE_INSTANCES: '10'
       JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: word_reader_0
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -224,12 +238,14 @@ services:
       WORD_READER_INSTANCES: '4'
       WORD_READER_PREFIX: word_reader
       WORD_READER_QUEUE: word_reader_queue
-      SUM_COUNT_INSTANCES: '4'
+      SUM_COUNT_INSTANCES: '10'
       SUM_COUNT_QUEUE: sum_count_queue
       SUM_AMOUNT_INSTANCES: '3'
       SUM_AMOUNT_QUEUE: sum_amount_queue
-      JOIN_AVERAGE_INSTANCES: '3'
+      JOIN_AVERAGE_INSTANCES: '10'
       JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: word_reader_1
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -247,12 +263,14 @@ services:
       WORD_READER_INSTANCES: '4'
       WORD_READER_PREFIX: word_reader
       WORD_READER_QUEUE: word_reader_queue
-      SUM_COUNT_INSTANCES: '4'
+      SUM_COUNT_INSTANCES: '10'
       SUM_COUNT_QUEUE: sum_count_queue
       SUM_AMOUNT_INSTANCES: '3'
       SUM_AMOUNT_QUEUE: sum_amount_queue
-      JOIN_AVERAGE_INSTANCES: '3'
+      JOIN_AVERAGE_INSTANCES: '10'
       JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: word_reader_2
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -270,12 +288,14 @@ services:
       WORD_READER_INSTANCES: '4'
       WORD_READER_PREFIX: word_reader
       WORD_READER_QUEUE: word_reader_queue
-      SUM_COUNT_INSTANCES: '4'
+      SUM_COUNT_INSTANCES: '10'
       SUM_COUNT_QUEUE: sum_count_queue
       SUM_AMOUNT_INSTANCES: '3'
       SUM_AMOUNT_QUEUE: sum_amount_queue
-      JOIN_AVERAGE_INSTANCES: '3'
+      JOIN_AVERAGE_INSTANCES: '10'
       JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: word_reader_3
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -294,11 +314,13 @@ services:
       CHUNK_SIZE: '1000'
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
-      SUM_COUNT_INSTANCES: '4'
+      SUM_COUNT_INSTANCES: '10'
       SUM_COUNT_PREFIX: sum_count
       SUM_COUNT_QUEUE: sum_count_queue
       JOIN_TOP_INSTANCES: '3'
       JOIN_TOP_QUEUE: join_top_queue
+      CRASH_NAME: sum_count_0
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -317,11 +339,13 @@ services:
       CHUNK_SIZE: '1000'
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
-      SUM_COUNT_INSTANCES: '4'
+      SUM_COUNT_INSTANCES: '10'
       SUM_COUNT_PREFIX: sum_count
       SUM_COUNT_QUEUE: sum_count_queue
       JOIN_TOP_INSTANCES: '3'
       JOIN_TOP_QUEUE: join_top_queue
+      CRASH_NAME: sum_count_1
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -340,11 +364,13 @@ services:
       CHUNK_SIZE: '1000'
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
-      SUM_COUNT_INSTANCES: '4'
+      SUM_COUNT_INSTANCES: '10'
       SUM_COUNT_PREFIX: sum_count
       SUM_COUNT_QUEUE: sum_count_queue
       JOIN_TOP_INSTANCES: '3'
       JOIN_TOP_QUEUE: join_top_queue
+      CRASH_NAME: sum_count_2
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -363,11 +389,163 @@ services:
       CHUNK_SIZE: '1000'
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
-      SUM_COUNT_INSTANCES: '4'
+      SUM_COUNT_INSTANCES: '10'
       SUM_COUNT_PREFIX: sum_count
       SUM_COUNT_QUEUE: sum_count_queue
       JOIN_TOP_INSTANCES: '3'
       JOIN_TOP_QUEUE: join_top_queue
+      CRASH_NAME: sum_count_3
+      CRASH_CONTROL_DIR: /crash_control
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  sum_count_4:
+    build:
+      context: ./src/
+      dockerfile: services/sum_count/Dockerfile
+    container_name: sum_count_4
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '4'
+      COORDINATOR_ID: '0'
+      TOP_SIZE: '20'
+      CHUNK_SIZE: '1000'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      SUM_COUNT_INSTANCES: '10'
+      SUM_COUNT_PREFIX: sum_count
+      SUM_COUNT_QUEUE: sum_count_queue
+      JOIN_TOP_INSTANCES: '3'
+      JOIN_TOP_QUEUE: join_top_queue
+      CRASH_NAME: sum_count_4
+      CRASH_CONTROL_DIR: /crash_control
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  sum_count_5:
+    build:
+      context: ./src/
+      dockerfile: services/sum_count/Dockerfile
+    container_name: sum_count_5
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '5'
+      COORDINATOR_ID: '0'
+      TOP_SIZE: '20'
+      CHUNK_SIZE: '1000'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      SUM_COUNT_INSTANCES: '10'
+      SUM_COUNT_PREFIX: sum_count
+      SUM_COUNT_QUEUE: sum_count_queue
+      JOIN_TOP_INSTANCES: '3'
+      JOIN_TOP_QUEUE: join_top_queue
+      CRASH_NAME: sum_count_5
+      CRASH_CONTROL_DIR: /crash_control
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  sum_count_6:
+    build:
+      context: ./src/
+      dockerfile: services/sum_count/Dockerfile
+    container_name: sum_count_6
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '6'
+      COORDINATOR_ID: '0'
+      TOP_SIZE: '20'
+      CHUNK_SIZE: '1000'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      SUM_COUNT_INSTANCES: '10'
+      SUM_COUNT_PREFIX: sum_count
+      SUM_COUNT_QUEUE: sum_count_queue
+      JOIN_TOP_INSTANCES: '3'
+      JOIN_TOP_QUEUE: join_top_queue
+      CRASH_NAME: sum_count_6
+      CRASH_CONTROL_DIR: /crash_control
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  sum_count_7:
+    build:
+      context: ./src/
+      dockerfile: services/sum_count/Dockerfile
+    container_name: sum_count_7
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '7'
+      COORDINATOR_ID: '0'
+      TOP_SIZE: '20'
+      CHUNK_SIZE: '1000'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      SUM_COUNT_INSTANCES: '10'
+      SUM_COUNT_PREFIX: sum_count
+      SUM_COUNT_QUEUE: sum_count_queue
+      JOIN_TOP_INSTANCES: '3'
+      JOIN_TOP_QUEUE: join_top_queue
+      CRASH_NAME: sum_count_7
+      CRASH_CONTROL_DIR: /crash_control
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  sum_count_8:
+    build:
+      context: ./src/
+      dockerfile: services/sum_count/Dockerfile
+    container_name: sum_count_8
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '8'
+      COORDINATOR_ID: '0'
+      TOP_SIZE: '20'
+      CHUNK_SIZE: '1000'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      SUM_COUNT_INSTANCES: '10'
+      SUM_COUNT_PREFIX: sum_count
+      SUM_COUNT_QUEUE: sum_count_queue
+      JOIN_TOP_INSTANCES: '3'
+      JOIN_TOP_QUEUE: join_top_queue
+      CRASH_NAME: sum_count_8
+      CRASH_CONTROL_DIR: /crash_control
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  sum_count_9:
+    build:
+      context: ./src/
+      dockerfile: services/sum_count/Dockerfile
+    container_name: sum_count_9
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '9'
+      COORDINATOR_ID: '0'
+      TOP_SIZE: '20'
+      CHUNK_SIZE: '1000'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      SUM_COUNT_INSTANCES: '10'
+      SUM_COUNT_PREFIX: sum_count
+      SUM_COUNT_QUEUE: sum_count_queue
+      JOIN_TOP_INSTANCES: '3'
+      JOIN_TOP_QUEUE: join_top_queue
+      CRASH_NAME: sum_count_9
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -385,7 +563,9 @@ services:
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
       JOIN_TOP_QUEUE: join_top_queue
-      SUM_COUNT_INSTANCES: '4'
+      SUM_COUNT_INSTANCES: '10'
+      CRASH_NAME: join_top_0
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -403,7 +583,9 @@ services:
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
       JOIN_TOP_QUEUE: join_top_queue
-      SUM_COUNT_INSTANCES: '4'
+      SUM_COUNT_INSTANCES: '10'
+      CRASH_NAME: join_top_1
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -421,7 +603,9 @@ services:
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
       JOIN_TOP_QUEUE: join_top_queue
-      SUM_COUNT_INSTANCES: '4'
+      SUM_COUNT_INSTANCES: '10'
+      CRASH_NAME: join_top_2
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -441,6 +625,8 @@ services:
       SUM_AMOUNT_QUEUE: sum_amount_queue
       AVERAGE_INSTANCES: '3'
       AVERAGE_QUEUE_PREFIX: average_queue
+      CRASH_NAME: sum_amount_0
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -460,6 +646,8 @@ services:
       SUM_AMOUNT_QUEUE: sum_amount_queue
       AVERAGE_INSTANCES: '3'
       AVERAGE_QUEUE_PREFIX: average_queue
+      CRASH_NAME: sum_amount_1
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -479,6 +667,8 @@ services:
       SUM_AMOUNT_QUEUE: sum_amount_queue
       AVERAGE_INSTANCES: '3'
       AVERAGE_QUEUE_PREFIX: average_queue
+      CRASH_NAME: sum_amount_2
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -495,8 +685,10 @@ services:
       MOM_HOST: rabbitmq
       AVERAGE_QUEUE_PREFIX: average_queue
       SUM_AMOUNT_INSTANCES: '3'
-      JOIN_AVERAGE_INSTANCES: '3'
+      JOIN_AVERAGE_INSTANCES: '10'
       JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: average_0
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -513,8 +705,10 @@ services:
       MOM_HOST: rabbitmq
       AVERAGE_QUEUE_PREFIX: average_queue
       SUM_AMOUNT_INSTANCES: '3'
-      JOIN_AVERAGE_INSTANCES: '3'
+      JOIN_AVERAGE_INSTANCES: '10'
       JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: average_1
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -531,8 +725,10 @@ services:
       MOM_HOST: rabbitmq
       AVERAGE_QUEUE_PREFIX: average_queue
       SUM_AMOUNT_INSTANCES: '3'
-      JOIN_AVERAGE_INSTANCES: '3'
+      JOIN_AVERAGE_INSTANCES: '10'
       JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: average_2
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -550,9 +746,11 @@ services:
       CHUNK_SIZE: '1000'
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
-      JOIN_AVERAGE_INSTANCES: '3'
+      JOIN_AVERAGE_INSTANCES: '10'
       JOIN_AVERAGE_PREFIX: join_average
       JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: join_average_0
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -570,9 +768,11 @@ services:
       CHUNK_SIZE: '1000'
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
-      JOIN_AVERAGE_INSTANCES: '3'
+      JOIN_AVERAGE_INSTANCES: '10'
       JOIN_AVERAGE_PREFIX: join_average
       JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: join_average_1
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -590,9 +790,165 @@ services:
       CHUNK_SIZE: '1000'
       MOM_HOST: rabbitmq
       GATEWAY_PREFIX: gateway
-      JOIN_AVERAGE_INSTANCES: '3'
+      JOIN_AVERAGE_INSTANCES: '10'
       JOIN_AVERAGE_PREFIX: join_average
       JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: join_average_2
+      CRASH_CONTROL_DIR: /crash_control
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  join_average_3:
+    build:
+      context: ./src/
+      dockerfile: services/join_average/Dockerfile
+    container_name: join_average_3
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '3'
+      COORDINATOR_ID: '0'
+      CHUNK_SIZE: '1000'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      JOIN_AVERAGE_INSTANCES: '10'
+      JOIN_AVERAGE_PREFIX: join_average
+      JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: join_average_3
+      CRASH_CONTROL_DIR: /crash_control
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  join_average_4:
+    build:
+      context: ./src/
+      dockerfile: services/join_average/Dockerfile
+    container_name: join_average_4
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '4'
+      COORDINATOR_ID: '0'
+      CHUNK_SIZE: '1000'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      JOIN_AVERAGE_INSTANCES: '10'
+      JOIN_AVERAGE_PREFIX: join_average
+      JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: join_average_4
+      CRASH_CONTROL_DIR: /crash_control
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  join_average_5:
+    build:
+      context: ./src/
+      dockerfile: services/join_average/Dockerfile
+    container_name: join_average_5
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '5'
+      COORDINATOR_ID: '0'
+      CHUNK_SIZE: '1000'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      JOIN_AVERAGE_INSTANCES: '10'
+      JOIN_AVERAGE_PREFIX: join_average
+      JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: join_average_5
+      CRASH_CONTROL_DIR: /crash_control
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  join_average_6:
+    build:
+      context: ./src/
+      dockerfile: services/join_average/Dockerfile
+    container_name: join_average_6
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '6'
+      COORDINATOR_ID: '0'
+      CHUNK_SIZE: '1000'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      JOIN_AVERAGE_INSTANCES: '10'
+      JOIN_AVERAGE_PREFIX: join_average
+      JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: join_average_6
+      CRASH_CONTROL_DIR: /crash_control
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  join_average_7:
+    build:
+      context: ./src/
+      dockerfile: services/join_average/Dockerfile
+    container_name: join_average_7
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '7'
+      COORDINATOR_ID: '0'
+      CHUNK_SIZE: '1000'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      JOIN_AVERAGE_INSTANCES: '10'
+      JOIN_AVERAGE_PREFIX: join_average
+      JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: join_average_7
+      CRASH_CONTROL_DIR: /crash_control
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  join_average_8:
+    build:
+      context: ./src/
+      dockerfile: services/join_average/Dockerfile
+    container_name: join_average_8
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '8'
+      COORDINATOR_ID: '0'
+      CHUNK_SIZE: '1000'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      JOIN_AVERAGE_INSTANCES: '10'
+      JOIN_AVERAGE_PREFIX: join_average
+      JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: join_average_8
+      CRASH_CONTROL_DIR: /crash_control
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+  join_average_9:
+    build:
+      context: ./src/
+      dockerfile: services/join_average/Dockerfile
+    container_name: join_average_9
+    stop_grace_period: 30s
+    environment:
+      PYTHONUNBUFFERED: '1'
+      LOG_LEVEL: INFO
+      ID: '9'
+      COORDINATOR_ID: '0'
+      CHUNK_SIZE: '1000'
+      MOM_HOST: rabbitmq
+      GATEWAY_PREFIX: gateway
+      JOIN_AVERAGE_INSTANCES: '10'
+      JOIN_AVERAGE_PREFIX: join_average
+      JOIN_AVERAGE_QUEUE: join_average_queue
+      CRASH_NAME: join_average_9
+      CRASH_CONTROL_DIR: /crash_control
     depends_on:
       rabbitmq:
         condition: service_healthy
