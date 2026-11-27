@@ -20,13 +20,16 @@ SUM_COUNT_QUEUE = os.environ.get("SUM_COUNT_QUEUE", "sum_count_queue")
 JOIN_TOP_INSTANCES = int(os.environ.get("JOIN_TOP_INSTANCES", 1))
 JOIN_TOP_QUEUE = os.environ.get("JOIN_TOP_QUEUE", "join_top_queue")
 
-# Same store as the Filter, two files:
-#   STATE : per-message idempotency (small, written twice per message)
-#       "data:{req_id}:{message_id}" -> PENDING {"payload": entries} | COMPLETED {}
+# Snapshot every SNAPSHOT_EVERY messages + journal, same store as the Filter, two files:
+#   STATE : the journal (small, ONE write per message)
+#       "data:{req_id}:{message_id}" -> PENDING {"payload": entries, "seq": n}  (journal entry, not yet in a snapshot)
+#                                    -> COMPLETED {}                            (already folded into a snapshot)
 #       "eof:{req_id}:{message_id}"  -> EOF_PENDING {"expected", "batch_id"} | EOF_COMPLETED {}
-#   WORDS : the state of each request (big, written once per message)
-#       "words:{req_id}" -> {"stage": WORDS, "words": {word: [en, fr]}, "recv": N, "last_applied": message_id}
-# Keeping the words apart means a PENDING/COMPLETED write does not rewrite them.
+#   WORDS : the snapshot of each request (big, written once every SNAPSHOT_EVERY messages)
+#       "words:{req_id}" -> {"stage": WORDS, "words": {word: [en, fr]}, "seq": n}
+# `seq` is the per-request order in which messages were persisted. A snapshot with seq=n contains
+# exactly the messages 1..n, so on restart the journal entries with seq > n are the ones to replay.
+SNAPSHOT_EVERY = int(os.environ.get("SNAPSHOT_EVERY", 50))
 SUM_COUNT_STATE_PATH = os.environ.get("SUM_COUNT_STATE_PATH", f"tmp/{SUM_COUNT_PREFIX}/{ID}/state.json")
 SUM_COUNT_WORDS_PATH = os.environ.get("SUM_COUNT_WORDS_PATH", f"tmp/{SUM_COUNT_PREFIX}/{ID}/words.json")
 COORDINATOR_STATE_PATH = os.environ.get("COORDINATOR_STATE_PATH", f"tmp/{SUM_COUNT_PREFIX}/{ID}/eof_state.json")
@@ -48,8 +51,9 @@ class SumCount:
 
         # {req_id: {word: [en_count, fr_count]}}, rebuilt from _words_state on startup.
         self.words: dict[int, dict[str, list[int]]] = {}
-        self._received: dict[int, int] = {}      # data messages applied per request
-        self._last_applied: dict[int, str] = {}  # last message folded into words[req_id]
+        self._seq: dict[int, int] = {}       # last seq persisted per request
+        self._since: dict[int, int] = {}     # messages applied since the last snapshot
+        self._journal: dict[int, list[tuple[int, str]]] = {}
 
         # The consumer thread mutates `words` and the coordinator thread writes the store,
         # and a store write dumps every live dict: both go through this lock.
@@ -87,17 +91,16 @@ class SumCount:
         self.__post_init__()
 
     def __post_init__(self):
-        # Words and message count come straight from the persisted state of each request.
+        snap_seq: dict[int, int] = {}
         for key in self._words_state.pending(WORDS_STAGE):
             req_id = int(key.split(":", 1)[1])
             rec = self._words_state.get(key)
 
             self.words[req_id] = rec["words"]
-            self._received[req_id] = rec["recv"]
-            self._last_applied[req_id] = rec["last_applied"]
-            self._get_tracker(req_id).record_recv(rec["recv"])
+            self._seq[req_id] = snap_seq[req_id] = rec["seq"]
+            self._get_tracker(req_id).record_recv(rec["seq"])
 
-        # Replay any DATA batch that was ACKed but not yet COMPLETED.
+        journal = []
         for msg_key in self._state.pending(PENDING_STAGE):
             try:
                 _, req_id_str, message_id = msg_key.split(":", 2)
@@ -106,21 +109,28 @@ class SumCount:
                 logging.warning("Skipping malformed PENDING key: %s", msg_key)
                 continue
 
-            entries = self._state.get(msg_key).get("payload")
-            if entries is None:
+            rec = self._state.get(msg_key)
+            entries, seq = rec.get("payload"), rec.get("seq")
+            if entries is None or seq is None:
                 logging.error("Cannot replay message %s req_id=%s — payload missing", message_id, req_id)
+                continue
+            journal.append((req_id, seq, message_id, msg_key, entries))
+
+        journal.sort(key=lambda j: (j[0], j[1]))
+
+        folded = []
+        for req_id, seq, message_id, msg_key, entries in journal:
+            if seq <= snap_seq.get(req_id, 0):
+                folded.append(msg_key)
                 continue
 
             logging.info("Replaying PENDING message %s req_id=%s", message_id, req_id)
-            if self._last_applied.get(req_id) == message_id:
-                # The words were saved but the crash came before COMPLETED: do not add it twice.
-                logging.info("Message %s was already folded into the words; marking it COMPLETED", message_id)
-            else:
-                self._apply(req_id, message_id, entries)
+            self._seq[req_id] = max(self._seq.get(req_id, 0), seq)
+            self._journal.setdefault(req_id, []).append((seq, msg_key))
+            self._apply(req_id, message_id, entries, seq)
 
-            self._state.put(msg_key, {"stage": COMPLETED_STAGE})
+        self._state.put_many({k: {"stage": COMPLETED_STAGE} for k in folded})
 
-        # Re-trigger any EOF whose coordinator call did not complete before crash.
         for eof_key in self._state.pending(EOF_PENDING_STAGE):
             try:
                 _, req_id_str, _ = eof_key.split(":", 2)
@@ -179,8 +189,6 @@ class SumCount:
         else:
             logging.info("All resources have been released; goodbye")
 
-    # Output ids come from the content (never from an in-memory counter), so a replay
-    # after a crash sends exactly the same ids and the receivers can drop the repeats.
     def _message_id(self, req_id: int, suffix: str) -> str:
         return f"{SUM_COUNT_PREFIX}_{ID}:{req_id}_{suffix}"
 
@@ -208,8 +216,9 @@ class SumCount:
     def _on_commit(self, req_id: int):
         with self._words_lock:
             request_words = self.words.pop(req_id, {})
-            self._received.pop(req_id, None)
-            self._last_applied.pop(req_id, None)
+            self._seq.pop(req_id, None)
+            self._since.pop(req_id, None)
+            self._journal.pop(req_id, None)
 
         # send common words in English and French to the Gateway
         self._send_common_words(req_id, request_words)
@@ -289,24 +298,30 @@ class SumCount:
             counts[0] += en_count
             counts[1] += fr_count
 
-    def _apply(self, req_id: int, message_id, entries: list[list]):
-        """Fold one message into the words and persist the new state in a single write."""
+    def _apply(self, req_id: int, message_id, entries: list[list], seq: int):
         with self._words_lock:
             self._accumulate(req_id, entries)
-            self._received[req_id] = self._received.get(req_id, 0) + 1
-            self._last_applied[req_id] = str(message_id)
+            self._since[req_id] = self._since.get(req_id, 0) + 1
 
-            fault_tolerance.crash(at="BEFORE_SAVE_WORDS")
-            self._words_state.put(f"words:{req_id}", {
-                "stage": WORDS_STAGE,
-                "words": self.words[req_id],
-                "recv": self._received[req_id],
-                "last_applied": str(message_id),
-            })
-            fault_tolerance.crash(at="AFTER_SAVE_WORDS")
+            if self._since[req_id] >= SNAPSHOT_EVERY:
+                self._snapshot(req_id, seq)
 
         with self._trackers_lock:
             self._get_tracker(req_id).record_recv(1)
+
+    def _snapshot(self, req_id: int, seq: int):
+        fault_tolerance.crash(at="BEFORE_SNAPSHOT")
+        self._words_state.put(f"words:{req_id}", {
+            "stage": WORDS_STAGE,
+            "words": {word: counts[:] for word, counts in self.words[req_id].items()},
+            "seq": seq,
+        })
+        fault_tolerance.crash(at="AFTER_SNAPSHOT")
+
+        entries = self._journal.get(req_id, [])
+        self._journal[req_id] = [(s, k) for s, k in entries if s > seq]
+        self._state.put_many({k: {"stage": COMPLETED_STAGE} for s, k in entries if s <= seq})
+        self._since[req_id] = 0
 
     def _handle_data(self, ack: Callable, message_id, req_id: int, entries: list[list]):
         msg_key = f"data:{req_id}:{message_id}"
@@ -317,19 +332,20 @@ class SumCount:
             ack()
             return
 
-        # Persist payload + mark PENDING in one atomic write before ACK.
+        seq = self._seq.get(req_id, 0) + 1
         fault_tolerance.crash(at="BEFORE_SAVE_PENDING")
-        self._state.put(msg_key, {"stage": PENDING_STAGE, "payload": entries})
+        self._state.put(msg_key, {"stage": PENDING_STAGE, "payload": entries, "seq": seq})
         fault_tolerance.crash(at="AFTER_SAVE_PENDING")
+
+        with self._words_lock:
+            self._seq[req_id] = seq
+            self._journal.setdefault(req_id, []).append((seq, msg_key))
 
         ack()
         fault_tolerance.crash(at="AFTER_DATA_ACK")
 
-        self._apply(req_id, message_id, entries)
+        self._apply(req_id, message_id, entries, seq)
         fault_tolerance.crash(at="AFTER_DATA_PROCESSED")
-
-        self._state.put(msg_key, {"stage": COMPLETED_STAGE})
-        fault_tolerance.crash(at="AFTER_DATA_COMPLETED")
 
     def _handle_eof(self, ack: Callable, message_id, req_id: int, expected_messages: int):
         eof_key = f"eof:{req_id}:{message_id}"

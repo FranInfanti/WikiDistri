@@ -28,6 +28,15 @@ class AtomicStore:
             self._data[str(req_id)] = record
             self._write()
 
+    def put_many(self, records: dict):
+        """Replace several records in a single atomic write."""
+        if not records:
+            return
+        with self._lock:
+            for key, record in records.items():
+                self._data[str(key)] = record
+            self._write()
+
     def update(self, req_id: int, **fields):
         """Merge fields in the record (perform an atomic read-modify-write)."""
         with self._lock:
