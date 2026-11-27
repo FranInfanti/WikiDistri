@@ -4,7 +4,7 @@ import zlib
 import signal
 import logging
 import threading
-
+from articles_buffer import ArticleBuffer
 from collections.abc import Callable
 from common import entity, message_protocol, middleware, rabbitmq, storage, fault_tolerance
 
@@ -21,8 +21,8 @@ EOF_SOURCES = 2
 # Single store for per-message idempotency and crash recovery.  Keys:
 #   "data:{req_id}:{batch_id}"  → DATA messages (articles or the average)
 #       PENDING   : {"stage": PENDING,   "payload": [[url, amount], ...] | average}
-#       BUFFERED  : {"stage": BUFFERED,  "payload": [[url, amount], ...], "recv_delta": 1}
-#                   (articles received, waiting for the average)
+#       BUFFERED  : {"stage": BUFFERED,  "segment": n, "recv_delta": 1}
+#                   (articles received, waiting for the average; the payload is in the buffer, see below)
 #       COMPLETED : {"stage": COMPLETED, "recv_delta": 1}
 #   "avg:{req_id}"              → average received for the request
 #       AVERAGE   : {"stage": AVERAGE, "average": float}
@@ -35,6 +35,13 @@ EOF_SOURCES = 2
 #       EOF_DONE        : final EOF already sent to the gateway
 JOIN_AVERAGE_STATE_PATH = os.environ.get("JOIN_AVERAGE_STATE_PATH", "tmp/state.json")
 
+# The articles waiting for the average do NOT live in the store above (every write there would rewrite
+# all of them). They go to a buffer of segment files, "{req_id}_{n}.json", of at most BUFFER_SEGMENT_SIZE
+# batches each: a write rewrites only the segment being filled and sealed segments are never touched again.
+#       "{msg_key}" -> {"stage": BUFFERED, "payload": [[url, amount], ...]}
+JOIN_AVERAGE_BUFFER_DIR = os.environ.get("JOIN_AVERAGE_BUFFER_DIR", "tmp/buffer")
+BUFFER_SEGMENT_SIZE = int(os.environ.get("BUFFER_SEGMENT_SIZE", 20))
+
 PENDING_STAGE = "PENDING"
 BUFFERED_STAGE = "BUFFERED"
 COMPLETED_STAGE = "COMPLETED"
@@ -44,6 +51,7 @@ EOF_ABSORBED_STAGE = "EOF_ABSORBED"
 EOF_AGGREGATING_STAGE = "EOF_AGGREGATING"
 EOF_READY_STAGE = "EOF_READY"
 EOF_DONE_STAGE = "EOF_DONE"
+
 class JoinAverage:
     _TIMEOUT = 5.0
     _GATEWAY_QUEUE = f"{GATEWAY_PREFIX}_5"
@@ -56,7 +64,7 @@ class JoinAverage:
 
         self._lock = threading.RLock()
         self._averages: dict[int, float] = {}
-        self._buffered: dict[int, dict[str, list]] = {}  # req_id -> {msg_key: articles}
+        self._buffer = ArticleBuffer(JOIN_AVERAGE_BUFFER_DIR, BUFFER_SEGMENT_SIZE)
         self._trackers: dict[int, entity.MessageTracker] = {}
 
         self.publisher = rabbitmq.RabbitPublisher(host=MOM_HOST, queues=[self._GATEWAY_QUEUE])
@@ -86,18 +94,7 @@ class JoinAverage:
             except (ValueError, IndexError, KeyError):
                 logging.warning("Skipping malformed AVERAGE key: %s", key)
 
-        for key in self._state.pending(BUFFERED_STAGE):
-            try:
-                req_id = int(key.split(":")[1])
-            except (ValueError, IndexError):
-                logging.warning("Skipping malformed BUFFERED key: %s", key)
-                continue
-
-            payload = self._state.get(key).get("payload")
-            if payload is None:
-                logging.error("Cannot restore %s: payload missing", key)
-                continue
-            self._buffered.setdefault(req_id, {})[key] = payload
+        self._buffer.recover()
 
         for stage in (COMPLETED_STAGE, BUFFERED_STAGE):
             for key in self._state.pending(stage):
@@ -124,7 +121,7 @@ class JoinAverage:
             logging.info("Replaying PENDING message %s", key)
             self._process_data(key, batch_id, req_id, payload)
 
-        for req_id in list(self._buffered):
+        for req_id in self._buffer.requests():
             if req_id in self._averages:
                 self._flush_buffered(req_id)
 
@@ -203,8 +200,10 @@ class JoinAverage:
     def _on_commit(self, req_id: int):
         with self._lock:
             self._averages.pop(req_id, None)
-            self._buffered.pop(req_id, None)
+            self._buffer.forget(req_id)
             self._trackers.pop(req_id, None)
+            self._state.delete(f"avg:{req_id}")
+            self._state.delete_prefix(f"data:{req_id}:")
         logging.info(f"Finished request for req_id={req_id}")
 
     def _on_recv_all(self, req_id: int, _sent_messages=None):
@@ -247,25 +246,25 @@ class JoinAverage:
     def _flush_buffered(self, req_id: int):
         with self._lock:
             average = self._averages[req_id]
-            buffered = self._buffered.get(req_id, {})
-            for msg_key in list(buffered):
-                batch_id = msg_key.split(":", 2)[2]
-                self._send_above_average(req_id, batch_id, buffered[msg_key], average)
+            for segment in self._buffer.segments(req_id):
+                batches = self._buffer.load(req_id, segment)
+                batches = {k: v for k, v in batches.items() if self._state.get(k).get("stage") == BUFFERED_STAGE}
+
+                for msg_key, articles in batches.items():
+                    batch_id = msg_key.split(":", 2)[2]
+                    self._send_above_average(req_id, batch_id, articles, average)
                 fault_tolerance.crash(at="AFTER_BUFFERED_SENT")
-                self._state.put(msg_key, {"stage": COMPLETED_STAGE, "recv_delta": 1})
-                del buffered[msg_key]
-            self._buffered.pop(req_id, None)
+
+                self._state.put_many({k: {"stage": COMPLETED_STAGE, "recv_delta": 1} for k in batches})
+                self._buffer.release(req_id, segment)
+            self._buffer.forget(req_id)
 
     def _process_articles(self, msg_key: str, batch_id, req_id: int, articles: list):
         with self._lock:
             average = self._averages.get(req_id)
             if average is None:
-                self._state.put(msg_key, {
-                    "stage": BUFFERED_STAGE,
-                    "payload": articles,
-                    "recv_delta": 1,
-                })
-                self._buffered.setdefault(req_id, {})[msg_key] = articles
+                segment = self._buffer.add(req_id, msg_key, articles)
+                self._state.put(msg_key, {"stage": BUFFERED_STAGE, "segment": segment, "recv_delta": 1})
             else:
                 self._send_above_average(req_id, batch_id, articles, average)
                 fault_tolerance.crash(at="AFTER_DATA_PROCESSED")
